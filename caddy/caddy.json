@@ -1,0 +1,74 @@
+{
+  "admin": {
+    "disabled": true,
+    "config": {
+      "persist": false
+    }
+  },
+  "logging": {
+    "logs": {
+      "default": {
+        "writer": {
+          "output": "discard"
+        }
+      }
+    }
+  },
+  "apps": {
+    "http": {
+      "servers": {
+        "srvh1": {
+          "listen": [":80"],
+          "routes": [{
+            "handle": [{
+              "handler": "static_response",
+              "headers": {
+                "Location": ["https://{http.request.host}{http.request.uri}"]
+              },
+              "status_code": 301
+            }]
+          }]
+        },
+        "srvh2": {
+          "listen": ["127.0.0.1:8443"],
+          "routes": [{
+              "match": [{
+                "host": ["{{DOMAIN}}"]
+              }],
+              "handle": [{
+                "handler": "reverse_proxy",
+                "upstreams": [{
+                  "dial": "127.0.0.1:8080"
+                }],
+                "headers": {
+                  "response": {
+                    "set": {
+                      "Strict-Transport-Security": ["max-age=31536000; includeSubDomains"]
+                    }
+                  }
+                }
+              }]
+            },
+            {
+              "handle": [{
+                "handler": "static_response",
+                "status_code": 404
+              }]
+            }
+          ],
+          "tls_connection_policies": [{}],
+          "protocols": ["h1","h2"]
+        }
+      }
+    },
+    "tls": {
+      "automation": {
+        "policies": [{
+          "issuers": [{
+            "module": "acme"
+          }]
+        }]
+      }
+    }
+  }
+}

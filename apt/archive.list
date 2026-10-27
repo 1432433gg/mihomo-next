@@ -1,0 +1,6 @@
+# Debian {{CODENAME}} 已停止维护，软件源已移到 archive.debian.org
+# 原来的文件备份在 sources.list.mihomo-next.bak
+deb http://archive.debian.org/debian {{CODENAME}} main contrib non-free
+deb http://archive.debian.org/debian {{CODENAME}}-updates main contrib non-free
+deb http://archive.debian.org/debian-security {{SECURITY}} main contrib non-free
+deb http://archive.debian.org/debian {{CODENAME}}-backports main contrib non-free

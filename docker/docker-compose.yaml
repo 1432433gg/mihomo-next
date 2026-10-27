@@ -1,0 +1,15 @@
+services:
+  reader:
+    image: ghcr.io/1432433gg/reader-next:{{READER_VERSION}}
+    container_name: reader-next
+    restart: always
+    ports:
+      - 127.0.0.1:8080:8080
+    volumes:
+      - reader-data:/app/storage
+    env_file:
+      - reader.env
+    logging:
+      driver: none
+volumes:
+  reader-data:

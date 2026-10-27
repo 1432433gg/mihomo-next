@@ -1,0 +1,22 @@
+log-level: silent
+mode: rule
+ipv6: false
+
+listeners:
+  - name: vless-reality-in
+    type: vless
+    listen: 0.0.0.0
+    port: {{PORT}}
+    users:
+      - uuid: {{UUID}}
+        flow: xtls-rprx-vision
+    reality-config:
+      dest: 127.0.0.1:8443
+      private-key: {{PRIVATE_KEY}}
+      short-id:
+        - ""
+      server-names:
+        - {{DOMAIN}}
+
+rules:
+  - MATCH,DIRECT
