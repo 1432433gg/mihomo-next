@@ -23,9 +23,9 @@
             "handle": [{
               "handler": "static_response",
               "headers": {
-                "Location": ["https://{http.request.host}{http.request.uri}"]
+                "Location": ["https://{http.request.host}{{PORT_SUFFIX}}{http.request.uri}"]
               },
-              "status_code": 301
+              "status_code": 302
             }]
           }]
         },
@@ -57,6 +57,9 @@
             }
           ],
           "tls_connection_policies": [{}],
+          "automatic_https": {
+            "disable_redirects": true
+          },
           "protocols": ["h1","h2"]
         }
       }

@@ -7,7 +7,7 @@
 #   wget -N https://raw.githubusercontent.com/1432433gg/mihomo-next/main/install.sh && chmod +x install.sh && ./install.sh
 #
 
-SCRIPT_VERSION="1.0.1"
+SCRIPT_VERSION="1.0.2"
 
 # ─── 路径 ───
 STATE_DIR=/etc/mihomo-next
@@ -720,8 +720,12 @@ write_caddy_service() {
   systemctl daemon-reload
 }
 
+# 80 端口跳转到 https://域名，Reality 端口不是 443 时带上端口。
+# Caddy 自带的跳转在模板里关掉了：它会跳到本机的 8443，外面打不开
 write_caddy_config() {
-  render_template caddy/caddy.json "$CADDY_CONF" DOMAIN="$DOMAIN"
+  local suffix=""
+  [[ $PORT == 443 ]] || suffix=":$PORT"
+  render_template caddy/caddy.json "$CADDY_CONF" DOMAIN="$DOMAIN" PORT_SUFFIX="$suffix"
 }
 
 check_caddy_config() {
@@ -999,7 +1003,13 @@ modify_port() {
   port_exist_check "$PORT"
   save_info
   write_mihomo_config || return 1
-  restart_mihomo && show_info
+  restart_mihomo || return 1
+  # 80 端口跳转的地址里带着 Reality 端口，跟着改
+  if [[ $MODE != ss ]]; then
+    write_caddy_config || return 1
+    restart_caddy || return 1
+  fi
+  show_info
 }
 
 # ─── 7. 服务状态 ───
@@ -1074,13 +1084,20 @@ update_mihomo() {
 }
 
 update_caddy() {
-  local version
+  local version installed=0
   if load_info >/dev/null 2>&1; then
     require_reality || return 1
+    installed=1
   fi
   read -rp "请输入 Caddy 版本号 [回车=最新版]：" version
   install_caddy "$(echo "$version" | tr -d '[:space:]')" || return 1
-  if [[ $CHANGED -eq 1 && -f $CADDY_CONF ]]; then
+  if [[ $installed -eq 1 && -f $CADDY_CONF ]]; then
+    # 配置模板可能随脚本升级改过，按现在的模板重新生成，版本没变也会重启
+    prepare_templates || return 1
+    [[ -f $CADDY_SERVICE ]] || write_caddy_service || return 1
+    write_caddy_config || return 1
+    restart_caddy
+  elif [[ $CHANGED -eq 1 && -f $CADDY_CONF ]]; then
     [[ -f $CADDY_SERVICE ]] || write_caddy_service || return 1
     restart_caddy
   fi
