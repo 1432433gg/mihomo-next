@@ -7,7 +7,7 @@
 #   wget -N https://raw.githubusercontent.com/1432433gg/mihomo-next/main/install.sh && chmod +x install.sh && ./install.sh
 #
 
-SCRIPT_VERSION="1.0.2"
+SCRIPT_VERSION="1.0.3"
 
 # ─── 路径 ───
 STATE_DIR=/etc/mihomo-next
@@ -247,7 +247,7 @@ apt_update() {
 install_deps() {
   print_info "安装依赖"
   apt_update || exit 1
-  apt_install wget curl lsof tar gzip ca-certificates dnsutils chrony
+  apt_install wget curl lsof tar gzip ca-certificates openssl dnsutils chrony
   judge "安装依赖"
 }
 
@@ -555,6 +555,76 @@ generate_keys() {
   [[ -n $PRIVATE_KEY && -n $PUBLIC_KEY ]]
 }
 
+# 由 Reality 私钥算出公钥（X25519），格式和 mihomo generate reality-keypair 一样；算不出时输出为空
+reality_public_key() {
+  local b64 pub
+  b64=$(printf '%s' "$1" | tr '_-' '/+')
+  case $((${#b64} % 4)) in
+    2) b64+="==" ;;
+    3) b64+="=" ;;
+  esac
+  pub=$({
+    printf '\x30\x2e\x02\x01\x00\x30\x05\x06\x03\x2b\x65\x6e\x04\x22\x04\x20'
+    printf '%s' "$b64" | base64 -d 2>/dev/null
+  } | openssl pkey -inform DER -pubout -outform DER 2>/dev/null | tail -c 32 | base64 | tr '+/' '-_' | tr -d '=\n')
+  [[ ${#pub} -eq 43 ]] && echo "$pub"
+}
+
+# Mihomo 配置文件 listeners 里某一项的值（第一处），去掉引号
+config_value() {
+  sed -n '/^listeners:/,$p' "$MIHOMO_CONF" |
+    sed -nE "s/^[[:space:]]*(-[[:space:]]+)?$1:[[:space:]]*\"?([^\"#[:space:]]+)\"?.*$/\2/p" | head -n1
+}
+
+# 手动改过 /etc/mihomo/config.yaml 时，把端口、UUID、Reality 密钥、Shadowsocks 密码
+# 同步回安装信息，「查看连接信息」就是新的。有变化时 SYNCED=1，端口变了时 PORT_SYNCED=1
+sync_info_from_config() {
+  local quiet=${1:-} port uuid priv pub pass list
+  local -a changed=()
+  SYNCED=0
+  PORT_SYNCED=0
+  [[ -f $MIHOMO_CONF ]] || return 0
+  load_info >/dev/null 2>&1 || return 0
+  port=$(config_value port)
+  if [[ $port =~ ^[0-9]+$ && $port != "$PORT" ]]; then
+    changed+=("端口 $PORT → $port")
+    PORT=$port
+    PORT_SYNCED=1
+  fi
+  if [[ $MODE == ss ]]; then
+    pass=$(config_value password)
+    if [[ -n $pass && $pass != "$SS_PASSWORD" ]]; then
+      changed+=("密码")
+      SS_PASSWORD=$pass
+    fi
+  else
+    uuid=$(config_value uuid)
+    if [[ -n $uuid && $uuid != "$UUID" ]]; then
+      changed+=("UUID")
+      UUID=$uuid
+    fi
+    priv=$(config_value private-key)
+    if [[ -n $priv && $priv != "$PRIVATE_KEY" ]]; then
+      pub=$(reality_public_key "$priv")
+      if [[ -n $pub ]]; then
+        changed+=("Reality 密钥")
+        PRIVATE_KEY=$priv
+        PUBLIC_KEY=$pub
+      else
+        print_warn "配置文件里的 private-key 算不出公钥（格式不对，或者系统没有 openssl），密钥没有同步"
+      fi
+    fi
+  fi
+  if [[ ${#changed[@]} -eq 0 ]]; then
+    [[ $quiet == quiet ]] || print_ok "配置文件和连接信息一致，不用同步"
+    return 0
+  fi
+  save_info
+  list=$(printf '%s、' "${changed[@]}")
+  print_ok "已从配置文件同步到连接信息：${list%、}"
+  SYNCED=1
+}
+
 # ─── GitHub 版本 ───
 github_latest_tag() {
   local api
@@ -639,6 +709,98 @@ check_mihomo_config() {
     print_error "Mihomo 配置检查未通过"
     return 1
   fi
+}
+
+# 配置文件是不是按脚本模板原样生成的（没加分流之类的改动）
+config_is_default() {
+  local saved=$MIHOMO_CONF tmp rc=1
+  tmp=$(mktemp) || return 1
+  MIHOMO_CONF=$tmp
+  write_mihomo_config >/dev/null 2>&1 && cmp -s "$tmp" "$saved" && rc=0
+  MIHOMO_CONF=$saved
+  rm -f "$tmp"
+  return $rc
+}
+
+# 只替换 listeners 里第一处 key 的值，引号和行尾注释保留，其他内容不动
+replace_config_value() {
+  local key=$1 value=$2 tmp
+  tmp=$(mktemp) || return 1
+  if ! awk -v key="$key" -v val="$value" '
+    /^listeners:/ { inl = 1 }
+    inl && !done && match($0, "^[ \t]*(-[ \t]+)?" key ":[ \t]*") {
+      prefix = substr($0, 1, RLENGTH)
+      rest = substr($0, RLENGTH + 1)
+      q = ""
+      if (substr(rest, 1, 1) == "\"") {
+        q = "\""
+        n = index(substr(rest, 2), "\"")
+        tail = (n > 0) ? substr(rest, n + 2) : ""
+      } else if (match(rest, /^[^ \t#]+/)) {
+        tail = substr(rest, RLENGTH + 1)
+      } else {
+        tail = rest
+      }
+      print prefix q val q tail
+      done = 1
+      next
+    }
+    { print }
+    END { exit done ? 0 : 1 }
+  ' "$MIHOMO_CONF" >"$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  cat "$tmp" >"$MIHOMO_CONF"
+  rm -f "$tmp"
+}
+
+# 改配置（菜单 4、5）前先看配置文件的情况，结果放在 CONFIG_STATE：
+#   missing：文件不在（删掉就是想恢复默认），按模板生成
+#   default：跟模板生成的一样，按模板重新生成
+#   custom： 改过（比如加了分流），只替换要改的那一项
+# 文件在的话先检查，再把手动改过的值同步到连接信息
+inspect_config() {
+  if [[ ! -f $MIHOMO_CONF ]]; then
+    CONFIG_STATE=missing
+    print_warn "没有找到 $MIHOMO_CONF，会按默认模板重新生成"
+    return 0
+  fi
+  if ! check_mihomo_config; then
+    print_warn "$MIHOMO_CONF 有错误：请先改好，或者删掉它恢复默认配置"
+    return 1
+  fi
+  sync_info_from_config quiet
+  if config_is_default; then
+    CONFIG_STATE=default
+  else
+    CONFIG_STATE=custom
+    print_info "配置文件改过（比如加了分流），只改这一项，其他内容保留"
+  fi
+}
+
+# 把新值写进配置文件：改过的只替换这一项（检查不通过就恢复原样），否则按模板生成
+apply_config_change() {
+  local key=$1 value=$2 orig
+  if [[ $CONFIG_STATE != custom ]]; then
+    write_mihomo_config
+    return
+  fi
+  orig=$(mktemp) || return 1
+  cat "$MIHOMO_CONF" >"$orig"
+  if ! replace_config_value "$key" "$value"; then
+    cat "$orig" >"$MIHOMO_CONF"
+    rm -f "$orig"
+    print_error "$MIHOMO_CONF 的 listeners 里没找到 $key，没有修改"
+    return 1
+  fi
+  if ! check_mihomo_config >/dev/null 2>&1; then
+    cat "$orig" >"$MIHOMO_CONF"
+    rm -f "$orig"
+    print_error "改完 $key 后配置检查没通过，$MIHOMO_CONF 已恢复原样"
+    return 1
+  fi
+  rm -f "$orig"
 }
 
 restart_mihomo() {
@@ -956,6 +1118,7 @@ modify_uuid() {
   local input
   load_info || return 1
   prepare_templates || return 1
+  inspect_config || return 1
   print_info "当前是 $(mode_name)"
   if [[ $MODE == ss ]]; then
     read -rp "请输入密码 [回车=随机生成]：" input
@@ -980,8 +1143,12 @@ modify_uuid() {
       return 1
     fi
   fi
+  if [[ $MODE == ss ]]; then
+    apply_config_change password "$SS_PASSWORD" || return 1
+  else
+    apply_config_change uuid "$UUID" || return 1
+  fi
   save_info
-  write_mihomo_config || return 1
   restart_mihomo && show_info
 }
 
@@ -989,6 +1156,7 @@ modify_port() {
   local old_port
   load_info || return 1
   prepare_templates || return 1
+  inspect_config || return 1
   old_port=$PORT
   print_info "当前是 $(mode_name)，端口 $PORT"
   if [[ $MODE == ss ]]; then
@@ -1001,8 +1169,8 @@ modify_port() {
     return 0
   fi
   port_exist_check "$PORT"
+  apply_config_change port "$PORT" || return 1
   save_info
-  write_mihomo_config || return 1
   restart_mihomo || return 1
   # 80 端口跳转的地址里带着 Reality 端口，跟着改
   if [[ $MODE != ss ]]; then
@@ -1078,8 +1246,33 @@ update_mihomo() {
   local version
   read -rp "请输入 Mihomo 版本号 [回车=最新版]：" version
   install_mihomo "$(echo "$version" | tr -d '[:space:]')" || return 1
-  if [[ $CHANGED -eq 1 && -f $MIHOMO_CONF ]]; then
-    restart_mihomo
+  # 配置文件被删掉：按默认模板重新生成（想恢复默认配置时就删掉它再选 8）
+  if [[ ! -f $MIHOMO_CONF ]]; then
+    load_info >/dev/null 2>&1 || return 0
+    print_warn "没有找到 $MIHOMO_CONF，按默认模板重新生成"
+    prepare_templates || return 1
+    write_mihomo_config || return 1
+    restart_mihomo || return 1
+    show_info
+    return 0
+  fi
+  # 配置文件可能被手动改过：先检查能不能用，再同步到连接信息，有改动就重启让它生效
+  if ! check_mihomo_config; then
+    print_warn "$MIHOMO_CONF 有错误，没有同步也没有重启，改好后再选一次 8"
+    return 1
+  fi
+  sync_info_from_config
+  if [[ $CHANGED -eq 1 || $SYNCED -eq 1 ]]; then
+    restart_mihomo || return 1
+  fi
+  # Reality 端口变了：80 端口跳转的地址也跟着改
+  if [[ $PORT_SYNCED -eq 1 && $MODE != ss && -f $CADDY_CONF ]]; then
+    prepare_templates || return 1
+    write_caddy_config || return 1
+    restart_caddy || return 1
+  fi
+  if [[ $SYNCED -eq 1 ]]; then
+    show_info
   fi
 }
 
