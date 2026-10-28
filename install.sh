@@ -7,7 +7,7 @@
 #   wget -N https://raw.githubusercontent.com/1432433gg/mihomo-next/main/install.sh && chmod +x install.sh && ./install.sh
 #
 
-SCRIPT_VERSION="1.0.3"
+SCRIPT_VERSION="1.0.4"
 
 # ─── 路径 ───
 STATE_DIR=/etc/mihomo-next
@@ -1223,6 +1223,17 @@ reader_version() {
   fi
 }
 
+# 当前的 TCP 拥塞控制算法，并说明 BBR 有没有开
+congestion_state() {
+  local cc
+  cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
+  case "$cc" in
+    "") echo -e "${Yellow}未知${Font}" ;;
+    bbr*) echo -e "${Green}${cc}（BBR 已开启）${Font}" ;;
+    *) echo -e "${Yellow}${cc}（BBR 未开启）${Font}" ;;
+  esac
+}
+
 show_status() {
   echo
   echo -e "Mihomo：$(service_state mihomo)  $(mihomo_current_version)"
@@ -1237,7 +1248,7 @@ show_status() {
     fi
   fi
   echo -e "Linux 内核：$(uname -r)"
-  echo -e "拥塞控制：$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)"
+  echo -e "拥塞控制：$(congestion_state)"
   echo
 }
 
