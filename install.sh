@@ -7,7 +7,7 @@
 #   wget -N https://raw.githubusercontent.com/1432433gg/mihomo-next/main/install.sh && chmod +x install.sh && ./install.sh
 #
 
-SCRIPT_VERSION="1.0.4"
+SCRIPT_VERSION="1.0.5"
 
 # ─── 路径 ───
 STATE_DIR=/etc/mihomo-next
@@ -418,9 +418,9 @@ wait_time_sync() {
 
 time_sync_state() {
   if chronyc tracking 2>/dev/null | grep -qE '^Leap status +: Normal'; then
-    echo -e "${Green}已同步${Font}  $(now_time)"
+    echo -e "${Green}已同步${Font}"
   else
-    echo -e "${Red}未同步${Font}  $(now_time)"
+    echo -e "${Red}未同步${Font}"
   fi
 }
 
@@ -1229,8 +1229,8 @@ congestion_state() {
   cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
   case "$cc" in
     "") echo -e "${Yellow}未知${Font}" ;;
-    bbr*) echo -e "${Green}${cc}（BBR 已开启）${Font}" ;;
-    *) echo -e "${Yellow}${cc}（BBR 未开启）${Font}" ;;
+    bbr*) echo -e "${cc}  ${Green}已开启${Font}" ;;
+    *) echo -e "${cc}  ${Yellow}未开启${Font}" ;;
   esac
 }
 
@@ -1240,11 +1240,12 @@ show_status() {
   echo -e "Caddy：$(service_state caddy)  $(caddy_current_version)"
   echo -e "Reader：$(container_state reader-next)  $(reader_version)"
   echo -e "时间同步：$(service_state chrony)  $(time_sync_state)"
+  echo -e "当前时间：$(now_time)"
   if load_info >/dev/null 2>&1 && [[ $MODE != ss ]]; then
     if cert_exists; then
-      echo -e "SSL 证书：${Green}已申请${Font}（$DOMAIN）"
+      echo -e "SSL 证书：${Green}已申请${Font}  $DOMAIN"
     else
-      echo -e "SSL 证书：${Red}未申请${Font}（$DOMAIN）"
+      echo -e "SSL 证书：${Red}未申请${Font}  $DOMAIN"
     fi
   fi
   echo -e "Linux 内核：$(uname -r)"
