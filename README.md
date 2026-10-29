@@ -94,7 +94,3 @@ LICENSE                       MIT 许可证
 | `/etc/mihomo-next/info.conf` | 安装方式、域名、端口、UUID、密钥、Shadowsocks 密码 |
 | `/etc/mihomo-next/docker-compose.yaml` | Reader 的 Docker 配置 |
 | `/etc/mihomo-next/reader.env` | Reader 设置 |
-
-## 许可证
-
-[MIT](LICENSE)
