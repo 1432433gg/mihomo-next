@@ -79,6 +79,7 @@ systemd/mihomo.service        Mihomo 服务
 systemd/caddy.service         Caddy 服务
 chrony/google.conf            谷歌时间服务器
 apt/archive.list              Debian 10 / 11 的归档软件源
+LICENSE                       MIT 许可证
 ```
 
 配置文件里的 `{{DOMAIN}}`、`{{PORT}}` 等在安装时自动填入。只下载 `install.sh` 运行时，脚本会从本仓库下载这些文件。
@@ -93,3 +94,7 @@ apt/archive.list              Debian 10 / 11 的归档软件源
 | `/etc/mihomo-next/info.conf` | 安装方式、域名、端口、UUID、密钥、Shadowsocks 密码 |
 | `/etc/mihomo-next/docker-compose.yaml` | Reader 的 Docker 配置 |
 | `/etc/mihomo-next/reader.env` | Reader 设置 |
+
+## 许可证
+
+[MIT](LICENSE)
