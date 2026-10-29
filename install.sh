@@ -7,7 +7,7 @@
 #   wget -N https://raw.githubusercontent.com/1432433gg/mihomo-next/main/install.sh && chmod +x install.sh && ./install.sh
 #
 
-SCRIPT_VERSION="1.0.5"
+SCRIPT_VERSION="1.0.6"
 
 # ─── 路径 ───
 STATE_DIR=/etc/mihomo-next
@@ -34,6 +34,14 @@ CADDY_DATA=$CADDY_XDG/caddy
 
 READER_IMAGE=ghcr.io/1432433gg/reader-next
 BBR_SCRIPT_URL=https://raw.githubusercontent.com/ylx2016/Linux-NetSpeed/master/tcp.sh
+# Docker 官方源（download.docker.com）
+DOCKER_REPO=https://download.docker.com/linux
+DOCKER_KEYRING=/usr/share/keyrings/docker-archive-keyring.gpg
+DOCKER_APT_LIST=/etc/apt/sources.list.d/docker.list
+# Docker 签名密钥的指纹（见 https://docs.docker.com/engine/install/debian/），下载的密钥必须是这个
+DOCKER_KEY_FINGERPRINT=9DC858229FC7DD38854AE2D88D81803C0EBFCD88
+# Docker 官方源已经不再给这些系统出新版本（Debian 10 停在 26.1.4，Ubuntu 20.04 停在 28.1.1）
+DOCKER_FROZEN_CODENAMES="buster focal"
 OS_RELEASE_FILE=/etc/os-release
 APT_SOURCES_LIST=/etc/apt/sources.list
 APT_SOURCES_DIR=/etc/apt/sources.list.d
@@ -822,6 +830,12 @@ caddy_current_version() {
   "$CADDY_BIN" version 2>/dev/null | grep -oE '^v[0-9]+\.[0-9]+\.[0-9]+'
 }
 
+# Docker 版本号，比如 26.1.5（去掉 Debian 包的 +dfsg1 这类后缀）
+docker_current_version() {
+  command -v docker >/dev/null 2>&1 || return 0
+  docker --version 2>/dev/null | sed -nE 's/^Docker version ([0-9]+(\.[0-9]+)*).*/\1/p'
+}
+
 # 安装或更新到指定版本（不传就是最新版），下载后校验 SHA-512；有变化时 CHANGED=1
 install_caddy() {
   local version=${1:-} current tmp num file sums base expected actual
@@ -938,13 +952,63 @@ compose() {
   fi
 }
 
+# 添加 Docker 官方源：下载签名密钥并核对指纹
+add_docker_source() {
+  local tmp fps
+  print_info "添加 Docker 官方源"
+  apt_install gnupg || return 1
+  tmp=$(mktemp)
+  if ! curl -fsSL --max-time 30 -o "$tmp" "$DOCKER_REPO/$OS_ID/gpg"; then
+    rm -f "$tmp"
+    print_warn "下载 Docker 签名密钥失败：$DOCKER_REPO/$OS_ID/gpg"
+    return 1
+  fi
+  if ! gpg --batch --yes --dearmor -o "$DOCKER_KEYRING" "$tmp" 2>/dev/null; then
+    rm -f "$tmp" "$DOCKER_KEYRING"
+    print_warn "Docker 签名密钥格式不对"
+    return 1
+  fi
+  rm -f "$tmp"
+  fps=$(gpg --dry-run --quiet --no-keyring --import --import-options import-show "$DOCKER_KEYRING" 2>/dev/null | grep -oE '[0-9A-F]{40}')
+  if ! grep -qx "$DOCKER_KEY_FINGERPRINT" <<<"$fps"; then
+    rm -f "$DOCKER_KEYRING"
+    print_warn "Docker 签名密钥的指纹对不上，已删掉，没有添加软件源（下载到的指纹：${fps:-无}）"
+    return 1
+  fi
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=$DOCKER_KEYRING] $DOCKER_REPO/$OS_ID $OS_CODENAME stable" >"$DOCKER_APT_LIST"
+  if ! apt_update; then
+    rm -f "$DOCKER_APT_LIST"
+    apt_update
+    return 1
+  fi
+  print_ok "已添加 Docker 官方源（$OS_ID $OS_CODENAME）"
+}
+
+# 第一次安装用 Docker 官方源（docker-ce）；官方源加不上或装不上时，退回系统软件源里的 docker.io
+# 已经装了 Docker 的不动
 install_docker() {
   if ! command -v docker >/dev/null 2>&1; then
-    print_info "安装 Docker"
-    apt_install docker.io || {
-      print_error "Docker 安装失败"
-      return 1
-    }
+    if add_docker_source; then
+      print_info "安装 Docker（官方源）"
+      if apt_install docker-ce docker-ce-cli containerd.io docker-compose-plugin; then
+        if [[ " $DOCKER_FROZEN_CODENAMES " == *" $OS_CODENAME "* ]]; then
+          print_warn "Docker 官方已不再给 $OS_ID $OS_CODENAME 出新版本：装的是它的最后一个版本，以后不会再有更新；Reader 照常能用"
+        fi
+      else
+        print_warn "从官方源安装 Docker 失败，改用系统软件源里的 docker.io"
+        rm -f "$DOCKER_APT_LIST"
+        apt_update || return 1
+      fi
+    else
+      print_warn "改用系统软件源里的 docker.io"
+    fi
+    if ! command -v docker >/dev/null 2>&1; then
+      print_info "安装 Docker（系统软件源）"
+      apt_install docker.io || {
+        print_error "Docker 安装失败"
+        return 1
+      }
+    fi
   fi
   systemctl enable --now docker >/dev/null 2>&1
   if ! docker compose version >/dev/null 2>&1 && ! command -v docker-compose >/dev/null 2>&1; then
@@ -953,7 +1017,7 @@ install_docker() {
       return 1
     }
   fi
-  print_ok "Docker 就绪"
+  print_ok "Docker 就绪：$(docker_current_version)"
 }
 
 write_compose() {
@@ -1238,6 +1302,7 @@ show_status() {
   echo
   echo -e "Mihomo：$(service_state mihomo)  $(mihomo_current_version)"
   echo -e "Caddy：$(service_state caddy)  $(caddy_current_version)"
+  echo -e "Docker：$(service_state docker)  $(docker_current_version)"
   echo -e "Reader：$(container_state reader-next)  $(reader_version)"
   echo -e "时间同步：$(service_state chrony)  $(time_sync_state)"
   echo -e "当前时间：$(now_time)"
@@ -1340,7 +1405,48 @@ update_reader() {
   fi
 }
 
-# ─── 11. 重新申请证书 ───
+# ─── 11. 更新 Docker ───
+# Docker 是用 apt 装的（官方源的 docker-ce，或系统软件源的 docker.io），这里更新到软件源里的最新版；容器设了 restart: always，会自己起来
+update_docker() {
+  local pkgs=() p old new
+  load_info || return 1
+  require_reality || return 1
+  if ! command -v docker >/dev/null 2>&1; then
+    print_error "没有安装 Docker"
+    return 1
+  fi
+  for p in docker.io docker-compose-v2 docker-compose docker-ce docker-ce-cli containerd.io docker-compose-plugin; do
+    [[ $(dpkg-query -W -f='${db:Status-Status}' "$p" 2>/dev/null) == installed ]] && pkgs+=("$p")
+  done
+  if [[ ${#pkgs[@]} -eq 0 ]]; then
+    print_error "Docker 不是用 apt 装的，脚本没法更新它"
+    return 1
+  fi
+  old=$(docker_current_version)
+  print_info "更新 Docker（${pkgs[*]}）"
+  apt_update || return 1
+  if ! DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confold \
+    -y -qq install --only-upgrade "${pkgs[@]}" >/dev/null; then
+    print_error "Docker 更新失败"
+    return 1
+  fi
+  systemctl enable --now docker >/dev/null 2>&1
+  new=$(docker_current_version)
+  if [[ $old == "$new" ]]; then
+    print_ok "Docker 已是软件源里的最新版 $new"
+  else
+    print_ok "Docker 已从 $old 更新到 $new"
+  fi
+  # 更新时 Docker 会重启；等一下 Reader，没起来就重新启动它
+  sleep 5
+  if [[ $(docker inspect -f '{{.State.Running}}' reader-next 2>/dev/null) != true && -f $COMPOSE_FILE ]]; then
+    compose up -d >/dev/null 2>&1
+    sleep 2
+  fi
+  echo -e "Reader：$(container_state reader-next)  $(reader_version)"
+}
+
+# ─── 12. 重新申请证书 ───
 reissue_cert() {
   load_info || return 1
   require_reality || return 1
@@ -1350,7 +1456,7 @@ reissue_cert() {
   wait_for_cert
 }
 
-# ─── 12. 更新 Linux 内核 ───
+# ─── 13. 更新 Linux 内核 ───
 # 已安装的具体版本内核包里，除了新内核和正在运行的内核，其余都删掉
 kernel_packages_to_remove() {
   local new_ver=$1 running=$2 pkg ver
@@ -1443,7 +1549,7 @@ update_kernel() {
   fi
 }
 
-# ─── 13. BBR ───
+# ─── 14. BBR ───
 install_bbr() {
   local dir
   dir=$(mktemp -d)
@@ -1523,13 +1629,14 @@ menu() {
   echo -e "${Green}8.${Font}  更新 / 指定版本 Mihomo"
   echo -e "${Green}9.${Font}  更新 / 指定版本 Caddy"
   echo -e "${Green}10.${Font} 更新 / 指定版本 Reader"
-  echo -e "${Green}11.${Font} 重新申请 SSL 证书"
+  echo -e "${Green}11.${Font} 更新 Docker"
+  echo -e "${Green}12.${Font} 重新申请 SSL 证书"
   if [[ $OS_ID == debian ]]; then
-    echo -e "${Green}12.${Font} 更新 Linux 内核"
+    echo -e "${Green}13.${Font} 更新 Linux 内核"
   else
-    echo -e "${Green}12.${Font} 更新 Linux 内核（仅 Debian）"
+    echo -e "${Green}13.${Font} 更新 Linux 内核（仅 Debian）"
   fi
-  echo -e "${Green}13.${Font} 安装 BBR 加速"
+  echo -e "${Green}14.${Font} 安装 BBR 加速"
   echo -e "${Green}0.${Font}  退出"
   read -rp "请输入数字：" menu_num
   case "$menu_num" in
@@ -1543,9 +1650,10 @@ menu() {
     8) update_mihomo ;;
     9) update_caddy ;;
     10) update_reader ;;
-    11) reissue_cert ;;
-    12) update_kernel ;;
-    13) install_bbr ;;
+    11) update_docker ;;
+    12) reissue_cert ;;
+    13) update_kernel ;;
+    14) install_bbr ;;
     0) exit 0 ;;
     *) print_error "请输入正确的数字" ;;
   esac
