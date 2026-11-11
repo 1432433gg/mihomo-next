@@ -66,6 +66,8 @@ wget -N https://raw.githubusercontent.com/1432433gg/mihomo-next/main/install.sh 
 - 用户名至少 5 位，只能用小写字母和数字；密码至少 8 位
 - 必须登录才能使用
 
+Reader 的更多用法和设置见 [reader-next](https://github.com/1432433gg/reader-next)。
+
 ## 目录
 
 ```
@@ -74,9 +76,7 @@ mihomo/vless-reality.yaml     Mihomo 配置（VLESS + Reality）
 mihomo/shadowsocks-2022.yaml  Mihomo 配置（Shadowsocks 2022）
 caddy/caddy.json              Caddy 配置
 reader/reader.env             Reader 设置
-remote-webview/remote-webview.env  Remote WebView 设置
 docker/docker-compose.yaml    Reader 的 Docker 配置
-docker/docker-compose.webview.yaml  Remote WebView 的 Docker 配置
 systemd/mihomo.service        Mihomo 服务
 systemd/caddy.service         Caddy 服务
 chrony/google.conf            谷歌时间服务器
@@ -95,6 +95,4 @@ LICENSE                       MIT 许可证
 | `/var/lib/caddy` | 证书 |
 | `/etc/mihomo-next/info.conf` | 安装方式、域名、端口、UUID、密钥、Shadowsocks 密码 |
 | `/etc/mihomo-next/docker-compose.yaml` | Reader 的 Docker 配置 |
-| `/etc/mihomo-next/docker-compose.webview.yaml` | Remote WebView 的 Docker 配置 |
 | `/etc/mihomo-next/reader.env` | Reader 设置 |
-| `/etc/mihomo-next/remote-webview.env` | Remote WebView 设置 |

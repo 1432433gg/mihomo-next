@@ -7,15 +7,13 @@
 #   wget -N https://raw.githubusercontent.com/1432433gg/mihomo-next/main/install.sh && chmod +x install.sh && ./install.sh
 #
 
-SCRIPT_VERSION="1.0.7"
+SCRIPT_VERSION="1.0.6"
 
 # ─── 路径 ───
 STATE_DIR=/etc/mihomo-next
 INFO_FILE=$STATE_DIR/info.conf
 COMPOSE_FILE=$STATE_DIR/docker-compose.yaml
 READER_ENV=$STATE_DIR/reader.env
-REMOTE_WEBVIEW_ENV=$STATE_DIR/remote-webview.env
-WEBVIEW_COMPOSE_FILE=$STATE_DIR/docker-compose.webview.yaml
 COMPOSE_PROJECT=reader-next
 
 MIHOMO_REPO=MetaCubeX/mihomo
@@ -64,7 +62,7 @@ SS_CIPHER=2022-blake3-aes-128-gcm
 # 配置文件模板放在仓库的各个目录里；只下载了 install.sh 时，运行时从 GitHub 下载
 REPO_RAW=https://raw.githubusercontent.com/1432433gg/mihomo-next/main
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)
-TEMPLATES="mihomo/vless-reality.yaml mihomo/shadowsocks-2022.yaml caddy/caddy.json reader/reader.env remote-webview/remote-webview.env docker/docker-compose.yaml docker/docker-compose.webview.yaml systemd/mihomo.service systemd/caddy.service chrony/google.conf apt/archive.list"
+TEMPLATES="mihomo/vless-reality.yaml mihomo/shadowsocks-2022.yaml caddy/caddy.json reader/reader.env docker/docker-compose.yaml systemd/mihomo.service systemd/caddy.service chrony/google.conf apt/archive.list"
 TEMPLATE_DIR=""
 
 # ─── 输出 ───
@@ -947,18 +945,10 @@ wait_for_cert() {
 
 # ─── Reader（Docker） ───
 compose() {
-  local use_webview=${READER_WEBVIEW_ENABLED:-auto}
-  local -a files=(-f "$COMPOSE_FILE")
-  if [[ $use_webview == auto && -f $WEBVIEW_COMPOSE_FILE && -f $REMOTE_WEBVIEW_ENV ]]; then
-    if [[ $(docker inspect -f '{{index .Config.Labels "io.reader-next.bundled-webview"}}' reader-next 2>/dev/null) == 1 ]]; then
-      use_webview=1
-    fi
-  fi
-  [[ $use_webview == 1 ]] && files+=(-f "$WEBVIEW_COMPOSE_FILE")
   if docker compose version >/dev/null 2>&1; then
-    docker compose -p "$COMPOSE_PROJECT" "${files[@]}" "$@"
+    docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" "$@"
   else
-    docker-compose -p "$COMPOSE_PROJECT" "${files[@]}" "$@"
+    docker-compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" "$@"
   fi
 }
 
@@ -1030,100 +1020,26 @@ install_docker() {
   print_ok "Docker 就绪：$(docker_current_version)"
 }
 
-# 接受普通 IPv4 或 IPv4/32，保存为统一格式。
-ipv4_cidr() {
-  local address=${1%/32} part
-  local -a parts
-  [[ $address =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
-  IFS=. read -r -a parts <<<"$address"
-  for part in "${parts[@]}"; do
-    ((10#$part <= 255)) || return 1
-  done
-  printf '%d.%d.%d.%d/32\n' "$((10#${parts[0]}))" "$((10#${parts[1]}))" "$((10#${parts[2]}))" "$((10#${parts[3]}))"
-}
-
-read_webview_ipv4() {
-  local detected default input address cidr values invalid
-  detected=$(get_public_ip 4)
-  default=$(ipv4_cidr "$detected")
-  default=${default%/32}
-  print_info "请填写本机全部公网 IPv4；有多个地址时用空格分隔"
-  while true; do
-    read -r -p "服务器公网 IPv4${default:+ [$default]}：" input || return 1
-    input=${input:-$default}
-    if [[ -z ${input//[[:space:]]/} ]]; then
-      print_error "公网 IPv4 不能为空"
-      continue
-    fi
-    values=""
-    invalid=0
-    for address in $input; do
-      cidr=$(ipv4_cidr "$address") || { invalid=1; break; }
-      case " $values " in
-        *" $cidr "*) ;;
-        *) values="${values:+$values }$cidr" ;;
-      esac
-    done
-    if [[ $invalid -eq 1 ]]; then
-      print_error "IPv4 地址不正确，请重新输入"
-    else
-      HOST_IPV4_CIDRS=$values
-      return 0
-    fi
-  done
-}
-
-write_remote_webview_env() {
-  # 已有设置由用户管理，不覆盖。
-  [[ -f $REMOTE_WEBVIEW_ENV ]] && return 0
-  read_webview_ipv4 || return 1
-  render_template remote-webview/remote-webview.env "$REMOTE_WEBVIEW_ENV" HOST_IPV4_CIDRS="$HOST_IPV4_CIDRS" || return 1
-  chmod 600 "$REMOTE_WEBVIEW_ENV"
-}
-
 write_compose() {
   # reader.env 可能被改过（比如用户数），已经有了就不覆盖
   if [[ ! -f $READER_ENV ]]; then
     render_template reader/reader.env "$READER_ENV" || return 1
-  elif ! grep -Eq '^[[:space:]]*REMOTE_WEBVIEW_URL=|^[[:space:]]*READER_APP_REMOTEWEBVIEWAPI=' "$READER_ENV"; then
-    # 老安装只补缺少的新设置，不覆盖账号、邀请码或已有渲染地址。
-    printf '\n# 动态书源渲染服务地址\nREMOTE_WEBVIEW_URL=http://remote-webview:8050\n' >>"$READER_ENV"
   fi
   render_template docker/docker-compose.yaml "$COMPOSE_FILE" READER_VERSION="${READER_VERSION:-latest}" || return 1
   # 旧版 docker-compose（Debian 10 / 11、Ubuntu 20.04 自带的 1.21 / 1.25）要求写 version
   if ! docker compose version >/dev/null 2>&1; then
-    sed -i '1i version: "2.4"' "$COMPOSE_FILE"
+    sed -i '1i version: "3.3"' "$COMPOSE_FILE"
   fi
-  compose config -q || { print_error "Docker 配置检查失败"; return 1; }
-}
-
-write_webview_compose() {
-  write_remote_webview_env || return 1
-  render_template docker/docker-compose.webview.yaml "$WEBVIEW_COMPOSE_FILE" READER_VERSION="${READER_VERSION:-latest}" || return 1
-  if ! docker compose version >/dev/null 2>&1; then
-    sed -i '1i version: "2.4"' "$WEBVIEW_COMPOSE_FILE"
-  fi
-  compose config -q || { print_error "Remote WebView 配置检查失败"; return 1; }
 }
 
 start_reader() {
   local out image
-  READER_WEBVIEW_ENABLED=0
   print_info "下载 Reader 镜像"
   if ! compose pull; then
     print_error "拉取镜像失败：版本不存在，或镜像不是公开的（$READER_IMAGE）"
     return 1
   fi
-  if [[ $(docker image inspect -f '{{index .Config.Labels "io.reader-next.bundled-webview"}}' "$READER_IMAGE:${READER_VERSION:-latest}" 2>/dev/null) == 1 ]]; then
-    READER_WEBVIEW_ENABLED=1
-    write_webview_compose || return 1
-    if ! out=$(compose up -d --force-recreate renderer-net remote-webview 2>&1); then
-      echo "$out" | tail -n 5
-      print_error "Remote WebView 启动失败，请检查 $REMOTE_WEBVIEW_ENV"
-      return 1
-    fi
-  fi
-  if ! out=$(compose up -d --remove-orphans reader 2>&1); then
+  if ! out=$(compose up -d --remove-orphans 2>&1); then
     echo "$out" | tail -n 3
     if grep -q "already in use" <<<"$out"; then
       print_error "服务器上已经有一个叫 reader-next 的容器，不是本脚本创建的（可能是以前手动部署的）"
@@ -1349,16 +1265,6 @@ container_state() {
   esac
 }
 
-compose_service_state() {
-  local id
-  id=$(compose ps -q "$1" 2>/dev/null)
-  if [[ -n $id ]]; then
-    container_state "$id"
-  else
-    echo -e "${Yellow}未安装${Font}"
-  fi
-}
-
 # Reader 的真实版本号：镜像构建时写在 org.opencontainers.image.version 标签里（比如 v1.0.3），
 # 没有这个标签就退回显示镜像标签（比如 latest）；没有容器时输出为空
 reader_image_version() {
@@ -1398,7 +1304,6 @@ show_status() {
   echo -e "Caddy：$(service_state caddy)  $(caddy_current_version)"
   echo -e "Docker：$(service_state docker)  $(docker_current_version)"
   echo -e "Reader：$(container_state reader-next)  $(reader_version)"
-  echo -e "Remote WebView：$(compose_service_state remote-webview)"
   echo -e "时间同步：$(service_state chrony)  $(time_sync_state)"
   echo -e "当前时间：$(now_time)"
   if load_info >/dev/null 2>&1 && [[ $MODE != ss ]]; then
