@@ -7,7 +7,7 @@
 #   wget -N https://raw.githubusercontent.com/1432433gg/mihomo-next/main/install.sh && chmod +x install.sh && ./install.sh
 #
 
-SCRIPT_VERSION="1.0.6"
+SCRIPT_VERSION="1.0.8"
 
 # ─── 路径 ───
 STATE_DIR=/etc/mihomo-next
@@ -33,6 +33,8 @@ CADDY_XDG=/var/lib
 CADDY_DATA=$CADDY_XDG/caddy
 
 READER_IMAGE=ghcr.io/1432433gg/reader-next
+WEBVIEW_IMAGE=ghcr.io/1432433gg/webview-next
+WEBVIEW_VERSION=1.0.0
 BBR_SCRIPT_URL=https://raw.githubusercontent.com/ylx2016/Linux-NetSpeed/master/tcp.sh
 # Docker 官方源（download.docker.com）
 DOCKER_REPO=https://download.docker.com/linux
@@ -62,7 +64,7 @@ SS_CIPHER=2022-blake3-aes-128-gcm
 # 配置文件模板放在仓库的各个目录里；只下载了 install.sh 时，运行时从 GitHub 下载
 REPO_RAW=https://raw.githubusercontent.com/1432433gg/mihomo-next/main
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)
-TEMPLATES="mihomo/vless-reality.yaml mihomo/shadowsocks-2022.yaml caddy/caddy.json reader/reader.env docker/docker-compose.yaml systemd/mihomo.service systemd/caddy.service chrony/google.conf apt/archive.list"
+TEMPLATES="mihomo/vless-reality.yaml mihomo/shadowsocks-2022.yaml caddy/caddy.json reader/reader.env docker/docker-compose.yaml docker/docker-compose.webview.yaml docker/webview-seccomp.json systemd/mihomo.service systemd/caddy.service chrony/google.conf apt/archive.list"
 TEMPLATE_DIR=""
 
 # ─── 输出 ───
@@ -434,9 +436,10 @@ time_sync_state() {
 
 # ─── 安装信息 ───
 save_info() {
-  mkdir -p "$STATE_DIR"
-  chmod 700 "$STATE_DIR"
-  cat >"$INFO_FILE" <<EOF
+  local info_tmp
+  mkdir -p "$STATE_DIR" && chmod 700 "$STATE_DIR" || return 1
+  info_tmp=$(mktemp "$STATE_DIR/.info.XXXXXX") || return 1
+  cat >"$info_tmp" <<EOF
 MODE="$MODE"
 DOMAIN="$DOMAIN"
 PORT="$PORT"
@@ -446,7 +449,10 @@ PUBLIC_KEY="$PUBLIC_KEY"
 SS_PASSWORD="$SS_PASSWORD"
 READER_VERSION="$READER_VERSION"
 EOF
-  chmod 600 "$INFO_FILE"
+  if [[ $? -ne 0 ]] || ! mv -f "$info_tmp" "$INFO_FILE"; then
+    rm -f "$info_tmp"
+    return 1
+  fi
 }
 
 load_info() {
@@ -689,7 +695,11 @@ install_mihomo() {
     print_warn "已把原来的 $MIHOMO_BIN_DIR 改名为 ${MIHOMO_BIN_DIR}.bak"
   fi
   mkdir -p "$MIHOMO_BIN_DIR"
-  install -m 755 -o root -g root "$tmp/mihomo" "$MIHOMO_BIN"
+  if ! install -m 755 -o root -g root "$tmp/mihomo" "$MIHOMO_BIN"; then
+    rm -rf "$tmp"
+    print_error "Mihomo 二进制文件安装失败"
+    return 1
+  fi
   rm -rf "$tmp"
   CHANGED=1
   print_ok "Mihomo $version 安装完成"
@@ -838,7 +848,7 @@ docker_current_version() {
 
 # 安装或更新到指定版本（不传就是最新版），下载后校验 SHA-512；有变化时 CHANGED=1
 install_caddy() {
-  local version=${1:-} current tmp num file sums base expected actual
+  local version=${1:-} package_mode=${2:-} current tmp num file sums base expected actual
   CHANGED=0
   if [[ -z $version ]]; then
     print_info "获取 Caddy 最新版本"
@@ -880,12 +890,16 @@ install_caddy() {
   fi
 
   # 之前用 apt 装过 Caddy 的话先卸掉，免得以后 apt 升级把这里的版本覆盖
-  if dpkg -s caddy >/dev/null 2>&1; then
+  if [[ $package_mode != preserve-package ]] && dpkg -s caddy >/dev/null 2>&1; then
     systemctl stop caddy >/dev/null 2>&1
     DEBIAN_FRONTEND=noninteractive apt-get -y -qq remove caddy >/dev/null 2>&1
     print_warn "已卸载 apt 安装的 Caddy"
   fi
-  install -m 755 -o root -g root "$tmp/caddy" "$CADDY_BIN"
+  if ! install -m 755 -o root -g root "$tmp/caddy" "$CADDY_BIN"; then
+    rm -rf "$tmp"
+    print_error "Caddy 二进制文件安装失败"
+    return 1
+  fi
   rm -rf "$tmp"
   CHANGED=1
   print_ok "Caddy $version 安装完成"
@@ -945,10 +959,17 @@ wait_for_cert() {
 
 # ─── Reader（Docker） ───
 compose() {
+  compose_file "$COMPOSE_FILE" "$@"
+}
+
+compose_file() {
+  local file=$1
+  shift
   if docker compose version >/dev/null 2>&1; then
-    docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" "$@"
+    docker compose -p "$COMPOSE_PROJECT" -f "$file" "$@"
   else
-    docker-compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" "$@"
+    # Compose 1.x reads relative seccomp paths from its working directory.
+    (cd "$(dirname "$file")" && docker-compose -p "$COMPOSE_PROJECT" -f "$(basename "$file")" "$@")
   fi
 }
 
@@ -1020,53 +1041,245 @@ install_docker() {
   print_ok "Docker 就绪：$(docker_current_version)"
 }
 
-write_compose() {
-  # reader.env 可能被改过（比如用户数），已经有了就不覆盖
+reader_owned() {
+  [[ $(docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' reader-next 2>/dev/null) == "$COMPOSE_PROJECT" ]]
+}
+
+reader_service_ready() {
+  local name=$1 image=$2 expected_id=$3 status id
+  id=$(compose ps -q "$name") || return 1
+  [[ -n $id ]] || return 1
+  if [[ $(docker inspect -f '{{.Config.Image}} {{.Image}}' "$id" 2>/dev/null) != "$image $expected_id" ]]; then
+    return 1
+  fi
+  local attempt
+  for ((attempt=0; attempt<45; attempt++)); do
+    status=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$id" 2>/dev/null)
+    case "$status" in
+      healthy|running) return 0 ;;
+      starting|created|restarting) sleep 2 ;;
+      *) return 1 ;;
+    esac
+  done
+  return 1
+}
+
+# Stage next to the live file so Compose resolves reader.env and the sandbox profile consistently.
+deploy_reader() (
+  local target=$1 completion=${2:-} reader_ref bundle image_id webview_id next previous="" profile_tmp=""
+  local old_ref old_id old_web_id old_web_ref old_web had_reader=0
+  [[ $target =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127}$ ]] || { print_error "Reader 版本无效：$target"; return 1; }
+  reader_ref="$READER_IMAGE:$target"
+  mkdir -p "$STATE_DIR" || return 1
+  exec 9>"$STATE_DIR/.reader-deploy.lock" || return 1
+  flock -x 9 || return 1
+  if docker inspect reader-next >/dev/null 2>&1; then
+    if ! reader_owned || [[ ! -f $COMPOSE_FILE ]]; then
+      print_error "已有同名 Reader 容器，且无法使用本脚本的配置恢复。请检查后再试。"
+      return 1
+    fi
+    had_reader=1
+    old_ref=$(docker inspect -f '{{.Config.Image}}' reader-next) || return 1
+    old_id=$(docker inspect -f '{{.Image}}' reader-next) || return 1
+    old_web=$(compose ps -q webview 2>/dev/null) || :
+    if [[ -n $old_web ]]; then
+      old_web_ref=$(docker inspect -f '{{.Config.Image}}' "$old_web") || return 1
+      old_web_id=$(docker inspect -f '{{.Image}}' "$old_web") || return 1
+    fi
+  fi
+  print_info "下载 Reader 镜像 $reader_ref"
+  if ! docker pull "$reader_ref"; then
+    print_error "Reader 镜像拉取失败：$reader_ref"
+    return 1
+  fi
+  image_id=$(docker image inspect -f '{{.Id}}' "$reader_ref") || return 1
+  bundle=$(docker image inspect -f '{{index .Config.Labels "io.reader-next.bundled-webview"}}' "$reader_ref") || return 1
+  if [[ $target == 1.2.1 && $bundle != 1 ]]; then
+    print_error "Reader 1.2.1 镜像缺少 WebView 能力标签：$reader_ref"
+    return 1
+  fi
+  local template=docker/docker-compose.yaml schema=3.3
+  if [[ $bundle == 1 ]]; then
+    template=docker/docker-compose.webview.yaml
+    schema=2.3
+    if ! docker info --format '{{json .SecurityOptions}}' | grep -q 'name=seccomp'; then
+      print_error "当前 Docker 缺少 Chromium 所需的 seccomp 支持"
+      return 1
+    fi
+    print_info "下载 WebView 镜像 $WEBVIEW_IMAGE:$WEBVIEW_VERSION"
+    if ! docker pull "$WEBVIEW_IMAGE:$WEBVIEW_VERSION"; then
+      print_error "WebView 镜像拉取失败：$WEBVIEW_IMAGE:$WEBVIEW_VERSION"
+      return 1
+    fi
+    webview_id=$(docker image inspect -f '{{.Id}}' "$WEBVIEW_IMAGE:$WEBVIEW_VERSION") || return 1
+  fi
+
+  # Template preparation owns its own EXIT trap when called from the menu.
+  next=$(mktemp "$STATE_DIR/.reader-compose.XXXXXX") || return 1
+  trap 'rm -f "$next" ${profile_tmp:+"$profile_tmp"} ${previous:+"$previous"}' EXIT
   if [[ ! -f $READER_ENV ]]; then
     render_template reader/reader.env "$READER_ENV" || return 1
   fi
-  render_template docker/docker-compose.yaml "$COMPOSE_FILE" READER_VERSION="${READER_VERSION:-latest}" || return 1
-  # 旧版 docker-compose（Debian 10 / 11、Ubuntu 20.04 自带的 1.21 / 1.25）要求写 version
-  if ! docker compose version >/dev/null 2>&1; then
-    sed -i '1i version: "3.3"' "$COMPOSE_FILE"
+  if [[ $bundle == 1 ]] && ! cmp -s "$TEMPLATE_DIR/docker/webview-seccomp.json" "$STATE_DIR/webview-seccomp.json"; then
+    profile_tmp=$(mktemp "$STATE_DIR/.webview-seccomp.XXXXXX") || return 1
+    cp "$TEMPLATE_DIR/docker/webview-seccomp.json" "$profile_tmp" || return 1
+    mv -f "$profile_tmp" "$STATE_DIR/webview-seccomp.json" || return 1
   fi
-}
-
-start_reader() {
-  local out image
-  print_info "下载 Reader 镜像"
-  if ! compose pull; then
-    print_error "拉取镜像失败：版本不存在，或镜像不是公开的（$READER_IMAGE）"
+  render_template "$template" "$next" READER_VERSION="$target" WEBVIEW_VERSION="$WEBVIEW_VERSION" || return 1
+  if ! docker compose version >/dev/null 2>&1; then
+    sed -i "1i version: \"$schema\"" "$next" || return 1
+  fi
+  if ! compose_file "$next" config -q; then
+    print_error "Docker Compose 配置校验失败，请检查 Compose 版本和模板"
     return 1
   fi
+
+  if [[ -f $COMPOSE_FILE ]]; then
+    previous=$(mktemp "$STATE_DIR/.reader-previous.XXXXXX") || return 1
+    cp -p "$COMPOSE_FILE" "$previous" || return 1
+  fi
+  mv -f "$next" "$COMPOSE_FILE" || return 1
+
+  local out failure=""
   if ! out=$(compose up -d --remove-orphans 2>&1); then
-    echo "$out" | tail -n 3
-    if grep -q "already in use" <<<"$out"; then
-      print_error "服务器上已经有一个叫 reader-next 的容器，不是本脚本创建的（可能是以前手动部署的）"
-      print_warn "确认不要了就删掉它再试：docker rm -f reader-next（数据卷不会被删）"
+    printf '%s\n' "$out" | tail -n 8 >&2
+    failure="Docker Compose 启动失败"
+  elif [[ $bundle == 1 ]] && ! reader_service_ready webview "$WEBVIEW_IMAGE:$WEBVIEW_VERSION" "$webview_id"; then
+    failure="WebView $WEBVIEW_VERSION 未通过健康检查"
+  elif ! reader_service_ready reader "$reader_ref" "$image_id"; then
+    failure="Reader $target 未通过健康检查"
+  elif [[ $completion == save-info ]] && ! save_info; then
+    failure="安装目录的版本记录保存失败"
+  elif [[ $completion == reinstall ]] && ! finish_reality_reinstall; then
+    failure="入口重新配置失败，正在恢复原 Reader 部署"
+  fi
+  if [[ -n $failure ]]; then
+    print_error "$failure"
+    # A failed pull or validation leaves the current deployment running. If up
+    # changed the containers, restore the preceding local image and Compose file.
+    if [[ $had_reader == 0 ]]; then
+      if ! compose down --remove-orphans; then
+        print_error "请检查失败部署的容器，数据卷已保留"
+      fi
+    fi
+    if [[ -n $previous ]]; then
+      if ! mv -f "$previous" "$COMPOSE_FILE"; then
+        print_error "无法恢复 Compose 文件，原配置保存在 $previous"
+        previous=""
+        return 1
+      fi
     else
-      print_error "Reader 启动失败"
+      rm -f "$COMPOSE_FILE"
+    fi
+    if [[ $had_reader == 1 ]]; then
+      if docker image tag "$old_id" "$old_ref" &&
+         { [[ -z $old_web_id ]] || docker image tag "$old_web_id" "$old_web_ref"; } &&
+         compose up -d --remove-orphans &&
+         { [[ -z $old_web_id ]] || reader_service_ready webview "$old_web_ref" "$old_web_id"; } &&
+         reader_service_ready reader "$old_ref" "$old_id"; then
+        print_ok "已恢复原 Reader 部署和数据卷"
+      else
+        print_error "原配置和数据卷已保留，自动恢复未通过。请检查 Docker 日志后重试。"
+      fi
     fi
     return 1
   fi
-  sleep 2
-  # 确认跑起来的是本脚本指定的镜像，而不是别的同名容器
-  image=$(docker inspect -f '{{.Config.Image}}' reader-next 2>/dev/null)
-  if [[ $image != "$READER_IMAGE:${READER_VERSION:-latest}" ]]; then
-    print_error "正在运行的 reader-next 用的镜像是 ${image:-未知}，不是 $READER_IMAGE:${READER_VERSION:-latest}"
-    return 1
+  print_ok "Reader $target 运行中"
+  if [[ $bundle == 1 ]]; then
+    print_ok "WebView $WEBVIEW_VERSION 健康"
   fi
-  if [[ $(docker inspect -f '{{.State.Running}}' reader-next 2>/dev/null) == true ]]; then
-    print_ok "Reader 运行中"
-  else
-    print_error "Reader 启动失败"
-    return 1
+)
+
+prepare_reality_ports() {
+  systemctl stop mihomo >/dev/null 2>&1 || :
+  systemctl stop caddy >/dev/null 2>&1 || :
+  port_exist_check 80 || return 1
+  port_exist_check "$PORT" || return 1
+  port_exist_check "$CADDY_TLS_PORT" || return 1
+  if ! reader_owned || [[ $(docker inspect -f '{{.State.Running}}' reader-next 2>/dev/null) != true ]]; then
+    port_exist_check "$READER_PORT" || return 1
   fi
 }
 
+configure_reality_ingress() {
+  # Mihomo 先占住 Reality 端口，Caddy 再申请证书。
+  install_mihomo || return 1
+  write_mihomo_service || return 1
+  if [[ ${1:-} != preserve-package || -z ${UUID:-} || -z ${PRIVATE_KEY:-} || -z ${PUBLIC_KEY:-} ]]; then
+    UUID=$(new_uuid) || return 1
+    generate_keys || { print_error "生成 Reality 密钥失败"; return 1; }
+  fi
+  MODE=reality
+  write_mihomo_config || return 1
+  restart_mihomo || return 1
+
+  install_caddy "" "${1:-}" || return 1
+  write_caddy_service || return 1
+  write_caddy_config || return 1
+  restart_caddy
+}
+
+# deploy_reader keeps its image and Compose backup until this step returns.
+finish_reality_reinstall() (
+  local snapshot file service i restored=1
+  local -a files=("$MIHOMO_BIN" "$MIHOMO_CONF" "$MIHOMO_SERVICE" "$CADDY_BIN" "$CADDY_CONF" "$CADDY_SERVICE")
+  local -A active enabled
+  snapshot=$(mktemp -d "$STATE_DIR/.ingress-previous.XXXXXX") || return 1
+  trap '[[ -z $snapshot ]] || rm -rf "$snapshot"' EXIT
+  for i in "${!files[@]}"; do
+    file=${files[$i]}
+    if [[ -e $file || -L $file ]]; then
+      cp -a "$file" "$snapshot/$i" || return 1
+    fi
+  done
+  for service in mihomo caddy; do
+    if systemctl is-active --quiet "$service"; then active[$service]=1; fi
+    enabled[$service]=$(systemctl is-enabled "$service" 2>/dev/null) || :
+  done
+
+  if prepare_reality_ports && configure_reality_ingress preserve-package && save_info; then
+    return 0
+  fi
+
+  # Stop partially configured services before restoring their units, binaries and config.
+  for service in caddy mihomo; do
+    systemctl stop "$service" >/dev/null 2>&1 || :
+  done
+  for i in "${!files[@]}"; do
+    file=${files[$i]}
+    if [[ -e $snapshot/$i || -L $snapshot/$i ]]; then
+      cp -a --remove-destination "$snapshot/$i" "$file" || restored=0
+    else
+      rm -f "$file" || restored=0
+    fi
+  done
+  systemctl daemon-reload || restored=0
+  for service in mihomo caddy; do
+    case "${enabled[$service]}" in
+      enabled) systemctl enable "$service" >/dev/null 2>&1 || restored=0 ;;
+      enabled-runtime)
+        systemctl disable "$service" >/dev/null 2>&1 &&
+          systemctl enable --runtime "$service" >/dev/null 2>&1 || restored=0 ;;
+      disabled|not-found|'') systemctl disable "$service" >/dev/null 2>&1 || : ;;
+    esac
+    if [[ ${active[$service]:-0} == 1 ]]; then
+      systemctl start "$service" && systemctl is-active --quiet "$service" || restored=0
+    elif systemctl is-active --quiet "$service"; then
+      restored=0
+    fi
+  done
+  if [[ $restored == 1 ]]; then
+    print_ok "已恢复原 Mihomo 和 Caddy 配置与运行状态"
+  else
+    print_error "入口自动恢复失败，原文件备份保存在 $snapshot"
+    snapshot=""
+  fi
+  return 1
+)
+
 # ─── 1. 安装 ───
 install_all() {
-  local reinstall=0
+  local reinstall=0 requested_reader_version=${READER_INSTALL_VERSION:-}
   check_install_mode reality || return 1
   prepare_templates || exit 1
   read_domain
@@ -1078,57 +1291,33 @@ install_all() {
   # 重新安装时沿用原来的 UUID 和密钥，客户端不用改
   if [[ -f $INFO_FILE ]]; then
     local new_domain=$DOMAIN new_port=$PORT
-    load_info
+    load_info || exit 1
     DOMAIN=$new_domain
     PORT=$new_port
     reinstall=1
   fi
 
-  # 先停掉自己的服务，再检查端口
-  systemctl stop mihomo >/dev/null 2>&1
-  systemctl stop caddy >/dev/null 2>&1
-  if [[ -f $COMPOSE_FILE ]] && command -v docker >/dev/null 2>&1; then
-    compose down >/dev/null 2>&1
+  READER_VERSION=${requested_reader_version:-${READER_VERSION:-latest}}
+  READER_VERSION=${READER_VERSION#v}
+
+  if [[ $reinstall -eq 1 ]]; then
+    # 先完成时间同步，失败时不切换 Reader，也不停止原入口。
+    configure_chrony || exit 1
+    install_docker || exit 1
+    deploy_reader "$READER_VERSION" reinstall || exit 1
+  else
+    prepare_reality_ports || exit 1
+    disable_firewall
+    configure_chrony || exit 1
+    install_docker || exit 1
+    # 关闭防火墙后重启 Docker，让它重新生成自己的 nftables 规则。
+    systemctl restart docker >/dev/null 2>&1
+    deploy_reader "$READER_VERSION" || exit 1
+    configure_reality_ingress || exit 1
+    save_info || exit 1
   fi
-  port_exist_check 80
-  port_exist_check "$PORT"
-  port_exist_check "$CADDY_TLS_PORT"
-  port_exist_check "$READER_PORT"
 
-  disable_firewall
-  configure_chrony || exit 1
-
-  # Reader
-  install_docker || exit 1
-  # 关防火墙会清空 nftables 规则，重启 Docker 让它重新生成自己的规则
-  systemctl restart docker >/dev/null 2>&1
-  READER_VERSION=${READER_VERSION:-latest}
-  write_compose || exit 1
-  start_reader || exit 1
-
-  # Mihomo 先启动占住 Reality 端口，Caddy 申请证书时就不会去抢 443，
-  # 验证请求经 Reality 回落交给 Caddy
-  install_mihomo || exit 1
-  write_mihomo_service || exit 1
-  if [[ $reinstall -eq 0 || -z ${UUID:-} || -z ${PRIVATE_KEY:-} || -z ${PUBLIC_KEY:-} ]]; then
-    UUID=$(new_uuid)
-    generate_keys || {
-      print_error "生成 Reality 密钥失败"
-      exit 1
-    }
-  fi
-  MODE=reality
-  save_info
-  write_mihomo_config || exit 1
-  restart_mihomo || exit 1
-
-  # Caddy
-  install_caddy || exit 1
-  write_caddy_service || exit 1
-  write_caddy_config || exit 1
-  restart_caddy || exit 1
-
-  wait_for_cert
+  wait_for_cert || :
   print_ok "安装完成"
   show_info
   if [[ $PORT -eq 443 ]]; then
@@ -1304,6 +1493,11 @@ show_status() {
   echo -e "Caddy：$(service_state caddy)  $(caddy_current_version)"
   echo -e "Docker：$(service_state docker)  $(docker_current_version)"
   echo -e "Reader：$(container_state reader-next)  $(reader_version)"
+  local webview
+  webview=$(compose ps -q webview 2>/dev/null)
+  if [[ -n $webview ]]; then
+    echo -e "WebView：$(container_state "$webview")  $(docker inspect -f '{{.Config.Image}} {{.State.Health.Status}}' "$webview" 2>/dev/null)"
+  fi
   echo -e "时间同步：$(service_state chrony)  $(time_sync_state)"
   echo -e "当前时间：$(now_time)"
   if load_info >/dev/null 2>&1 && [[ $MODE != ss ]]; then
@@ -1378,7 +1572,7 @@ update_reader() {
   load_info || return 1
   require_reality || return 1
   prepare_templates || return 1
-  read -rp "请输入 Reader 版本号 [回车=最新版]：" version
+  read -rp "请输入 Reader 版本号 [回车=最新版]：" version || return 1
   version=$(echo "$version" | tr -d '[:space:]')
   if [[ -z $version ]]; then
     READER_VERSION=latest
@@ -1388,9 +1582,7 @@ update_reader() {
   # 镜像没变也照常 up -d，改过的 reader.env 才会生效；只是提示不同
   old_image=$(docker inspect -f '{{.Image}}' reader-next 2>/dev/null)
   old_version=$(reader_image_version)
-  write_compose || return 1
-  start_reader || return 1
-  save_info
+  deploy_reader "$READER_VERSION" save-info || return 1
   new_version=$(reader_image_version)
   if [[ -n $old_image && $(docker inspect -f '{{.Image}}' reader-next 2>/dev/null) == "$old_image" ]]; then
     if [[ $READER_VERSION == latest ]]; then

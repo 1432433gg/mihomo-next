@@ -1,0 +1,33 @@
+services:
+  reader:
+    image: ghcr.io/1432433gg/reader-next:{{READER_VERSION}}
+    container_name: reader-next
+    restart: always
+    ports:
+      - 127.0.0.1:8080:8080
+    volumes:
+      - reader-data:/app/storage
+    env_file:
+      - reader.env
+    logging:
+      driver: none
+    environment:
+      REMOTE_WEBVIEW_URL: http://webview:8050
+    depends_on:
+      webview:
+        condition: service_healthy
+
+  webview:
+    image: ghcr.io/1432433gg/webview-next:{{WEBVIEW_VERSION}}
+    restart: unless-stopped
+    init: true
+    shm_size: 256m
+    security_opt:
+      - seccomp=./webview-seccomp.json
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8050/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+volumes:
+  reader-data:

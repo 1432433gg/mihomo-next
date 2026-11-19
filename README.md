@@ -68,6 +68,24 @@ wget -N https://raw.githubusercontent.com/1432433gg/mihomo-next/main/install.sh 
 
 Reader 的更多用法和设置见 [reader-next](https://github.com/1432433gg/reader-next)。
 
+### Reader 1.2.1 测试版
+
+菜单 1 的普通安装及菜单 10 回车跟随 Reader 的稳定镜像。测试期间稳定版为 1.2.0，使用单容器模板。
+
+新装测试版时下载脚本，再明确指定版本，进入菜单 1。
+
+```bash
+wget -N https://raw.githubusercontent.com/1432433gg/mihomo-next/main/install.sh
+chmod +x install.sh
+READER_INSTALL_VERSION=1.2.1 ./install.sh
+```
+
+旧安装先用菜单 3 更新脚本。克隆仓库安装的用户先在仓库执行 git pull。重新进入脚本后，在菜单 10 输入 1.2.1。脚本 1.0.8 根据拉取的 Reader 镜像选择模板，同时启动 WebView 1.0.0。WebView 只在 Compose 内网可访问。
+
+回到稳定版时，在菜单 10 输入 1.2.0 或直接回车。两种部署使用同一个 Compose 项目、reader-data 数据卷、reader.env 和 Caddy 入口。已有 reader.env 在切换时原样保留。
+
+1.2.1 的 Reader 或 WebView 镜像拉取失败时，核对版本号、服务器访问 ghcr.io 的网络和镜像的公开状态。启动失败时可从 /etc/mihomo-next 执行 docker compose -p reader-next logs，或在旧环境使用 docker-compose。WebView 需要 Docker 支持 seccomp、init 及可用的 Chromium 沙盒。脚本会检查配置和服务健康状态，切换失败会尝试恢复原部署。
+
 ## 目录
 
 ```
@@ -76,7 +94,9 @@ mihomo/vless-reality.yaml     Mihomo 配置（VLESS + Reality）
 mihomo/shadowsocks-2022.yaml  Mihomo 配置（Shadowsocks 2022）
 caddy/caddy.json              Caddy 配置
 reader/reader.env             Reader 设置
-docker/docker-compose.yaml    Reader 的 Docker 配置
+docker/docker-compose.yaml         Reader 单容器配置
+docker/docker-compose.webview.yaml Reader 和 WebView 配置
+docker/webview-seccomp.json        Chromium 沙盒配置
 systemd/mihomo.service        Mihomo 服务
 systemd/caddy.service         Caddy 服务
 chrony/google.conf            谷歌时间服务器
