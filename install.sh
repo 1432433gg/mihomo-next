@@ -7,7 +7,7 @@
 #   wget -N https://raw.githubusercontent.com/1432433gg/mihomo-next/main/install.sh && chmod +x install.sh && ./install.sh
 #
 
-SCRIPT_VERSION="1.0.9"
+SCRIPT_VERSION="1.1.0"
 
 # ─── 路径 ───
 STATE_DIR=/etc/mihomo-next
@@ -1231,7 +1231,7 @@ deploy_reader() (
   fi
   print_ok "Reader $target 运行中"
   if [[ $bundle == 1 ]]; then
-    print_ok "WebView $WEBVIEW_VERSION 健康"
+    print_ok "WebView $WEBVIEW_VERSION 运行中"
   fi
 )
 
@@ -2124,7 +2124,10 @@ menu() {
     4) modify_uuid ;;
     5) modify_port ;;
     6) show_info ;;
-    7) show_status ;;
+    7)
+      echo
+      show_status
+      ;;
     8) update_mihomo ;;
     9) update_caddy ;;
     10) update_reader ;;
