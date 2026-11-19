@@ -47,10 +47,6 @@ wget -N https://raw.githubusercontent.com/1432433gg/mihomo-next/main/install.sh 
 0.  退出
 ```
 
-首次安装前，菜单 3、6、7、14、15 和 0 可直接选择。按 6 没有安装信息，或误选 4、5、8～13 时，脚本先提示，再返回主菜单重选。按 7 显示完状态后回到终端。
-
-菜单 7 首行显示当前部署。Shadowsocks 2022 只显示 Mihomo、时间同步、当前时间、Linux 内核和拥塞控制。Reality 还显示 Caddy、Docker、Reader、SSL 证书和已部署的 WebView；Docker 版本后标明官方版或系统版。Shadowsocks 2022 模式下，菜单 9～13 会提示此模式没有该选项。
-
 ## 组成
 
 | 组件 | 说明 |
