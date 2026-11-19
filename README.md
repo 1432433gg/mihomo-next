@@ -54,10 +54,11 @@ wget -N https://raw.githubusercontent.com/1432433gg/mihomo-next/main/install.sh 
 | Mihomo | VLESS + Reality 服务端，默认 443 端口；只装 Shadowsocks 2022 时是 Shadowsocks 服务端，默认随机端口（10000-32767）；所有流量直连出站 |
 | Caddy | 监听 80 端口（申请证书、跳转 HTTPS）和本机 8443（Reality 的回落目标），自动申请和续期证书，反代 Reader |
 | Reader | Docker 运行，只在本机 8080 监听，由 Caddy 反代 |
+| WebView | 为支持的 Reader 版本渲染动态网页，仅在 Compose 内网可访问 |
 | Docker | 用 Docker 官方源安装（连不上时用系统自带的 docker.io） |
 | chrony | 使用谷歌时间服务器，时区 Asia/Shanghai |
 
-所有组件默认不记录日志。
+Mihomo、Caddy 和 Reader 默认关闭服务日志输出。
 
 ## Reader
 
@@ -71,21 +72,21 @@ Reader 的更多用法和设置见 [reader-next](https://github.com/1432433gg/re
 
 ## 目录
 
-```
-install.sh                    安装脚本
-mihomo/vless-reality.yaml     Mihomo 配置（VLESS + Reality）
-mihomo/shadowsocks-2022.yaml  Mihomo 配置（Shadowsocks 2022）
-caddy/caddy.json              Caddy 配置
-reader/reader.env             Reader 设置
-docker/docker-compose.yaml         Reader 单容器配置
-docker/docker-compose.webview.yaml Reader 和 WebView 配置
-docker/webview-seccomp.json        Chromium 沙盒配置
-systemd/mihomo.service        Mihomo 服务
-systemd/caddy.service         Caddy 服务
-chrony/google.conf            谷歌时间服务器
-apt/archive.list              Debian 10 / 11 的归档软件源
-LICENSE                       MIT 许可证
-```
+| 路径 | 说明 |
+| --- | --- |
+| `install.sh` | 安装脚本 |
+| `mihomo/vless-reality.yaml` | Mihomo 配置（VLESS + Reality） |
+| `mihomo/shadowsocks-2022.yaml` | Mihomo 配置（Shadowsocks 2022） |
+| `caddy/caddy.json` | Caddy 配置 |
+| `reader/reader.env` | Reader 设置 |
+| `docker/docker-compose.yaml` | Reader 单容器配置 |
+| `docker/docker-compose.webview.yaml` | Reader 和 WebView 配置 |
+| `docker/webview-seccomp.json` | Chromium 沙盒配置 |
+| `systemd/mihomo.service` | Mihomo 服务 |
+| `systemd/caddy.service` | Caddy 服务 |
+| `chrony/google.conf` | 谷歌时间服务器 |
+| `apt/archive.list` | Debian 10 / 11 的归档软件源 |
+| `LICENSE` | MIT 许可证 |
 
 配置文件里的 `{{DOMAIN}}`、`{{PORT}}` 等在安装时自动填入。只下载 `install.sh` 运行时，脚本会从本仓库下载这些文件。
 
