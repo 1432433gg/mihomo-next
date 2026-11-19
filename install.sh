@@ -7,7 +7,7 @@
 #   wget -N https://raw.githubusercontent.com/1432433gg/mihomo-next/main/install.sh && chmod +x install.sh && ./install.sh
 #
 
-SCRIPT_VERSION="1.0.8"
+SCRIPT_VERSION="1.0.9"
 
 # ─── 路径 ───
 STATE_DIR=/etc/mihomo-next
@@ -33,6 +33,7 @@ CADDY_XDG=/var/lib
 CADDY_DATA=$CADDY_XDG/caddy
 
 READER_IMAGE=ghcr.io/1432433gg/reader-next
+WEBVIEW_REPO=1432433gg/webview-next
 WEBVIEW_IMAGE=ghcr.io/1432433gg/webview-next
 WEBVIEW_VERSION=1.0.0
 BBR_SCRIPT_URL=https://raw.githubusercontent.com/ylx2016/Linux-NetSpeed/master/tcp.sh
@@ -457,11 +458,12 @@ EOF
 
 load_info() {
   if [[ ! -f $INFO_FILE ]]; then
-    print_error "未找到安装信息，请先安装（菜单 1 或 2）"
+    echo "未找到安装信息，请先安装（菜单 1 或 2）"
     return 1
   fi
   # shellcheck disable=SC1090
   . "$INFO_FILE"
+  MODE=${MODE:-reality}
   READER_VERSION=${READER_VERSION:-latest}
 }
 
@@ -487,18 +489,18 @@ check_install_mode() {
   current=$(installed_mode) || return 0
   [[ $current == "$want" ]] && return 0
   if [[ $current == ss ]]; then
-    print_error "这台服务器已经装了 Mihomo + Shadowsocks 2022，两种安装方式只能选一种"
+    echo "这台服务器已经装了 Mihomo + Shadowsocks 2022，两种安装方式只能选一种"
   else
-    print_error "这台服务器已经装了 Mihomo + Reality + Caddy + Reader，两种安装方式只能选一种"
+    echo "这台服务器已经装了 Mihomo + Reality + Caddy + Reader，两种安装方式只能选一种"
   fi
-  print_warn "要换成另一种，请重装系统后再安装"
+  echo "要换成另一种，请重装系统后再安装"
   return 1
 }
 
 # 只装了 Shadowsocks 时没有域名、Caddy 和 Reader
 require_reality() {
   if [[ $MODE == ss ]]; then
-    print_error "当前装的是 Mihomo + Shadowsocks 2022，没有这一项"
+    echo "当前装的是 Mihomo + Shadowsocks 2022，没有这一项"
     return 1
   fi
 }
@@ -846,6 +848,25 @@ docker_current_version() {
   docker --version 2>/dev/null | sed -nE 's/^Docker version ([0-9]+(\.[0-9]+)*).*/\1/p'
 }
 
+docker_package() {
+  local package
+  for package in docker-ce docker.io; do
+    if [[ $(dpkg-query -W -f='${db:Status-Status}' "$package" 2>/dev/null) == installed ]]; then
+      echo "$package"
+      return 0
+    fi
+  done
+  return 1
+}
+
+docker_system_name() {
+  if [[ $OS_ID == ubuntu ]]; then
+    echo Ubuntu
+  else
+    echo Debian
+  fi
+}
+
 # 安装或更新到指定版本（不传就是最新版），下载后校验 SHA-512；有变化时 CHANGED=1
 install_caddy() {
   local version=${1:-} package_mode=${2:-} current tmp num file sums base expected actual
@@ -973,6 +994,22 @@ compose_file() {
   fi
 }
 
+webview_container() {
+  local rows id
+  [[ -f $COMPOSE_FILE ]] || return 1
+  rows=$(docker ps -a \
+    --filter "label=com.docker.compose.project=$COMPOSE_PROJECT" \
+    --filter 'label=com.docker.compose.service=webview' \
+    --format '{{.ID}} {{.Label "com.docker.compose.oneoff"}}' 2>/dev/null) || return 1
+  id=$(awk 'NF && tolower($2) != "true" { print $1 }' <<<"$rows")
+  [[ -n $id && $id != *$'\n'* ]] || return 1
+  echo "$id"
+}
+
+valid_image_tag() {
+  [[ $1 =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127}$ ]]
+}
+
 # 添加 Docker 官方源：下载签名密钥并核对指纹
 add_docker_source() {
   local tmp fps
@@ -1056,7 +1093,8 @@ reader_service_ready() {
   for ((attempt=0; attempt<45; attempt++)); do
     status=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$id" 2>/dev/null)
     case "$status" in
-      healthy|running) return 0 ;;
+      healthy) return 0 ;;
+      running) [[ $name != webview ]] && return 0; return 1 ;;
       starting|created|restarting) sleep 2 ;;
       *) return 1 ;;
     esac
@@ -1068,7 +1106,8 @@ reader_service_ready() {
 deploy_reader() (
   local target=$1 completion=${2:-} reader_ref bundle image_id webview_id next previous="" profile_tmp=""
   local old_ref old_id old_web_id old_web_ref old_web had_reader=0
-  [[ $target =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127}$ ]] || { print_error "Reader 版本无效：$target"; return 1; }
+  local WEBVIEW_VERSION=$WEBVIEW_VERSION
+  valid_image_tag "$target" || { print_error "Reader 版本无效：$target"; return 1; }
   reader_ref="$READER_IMAGE:$target"
   mkdir -p "$STATE_DIR" || return 1
   exec 9>"$STATE_DIR/.reader-deploy.lock" || return 1
@@ -1081,7 +1120,7 @@ deploy_reader() (
     had_reader=1
     old_ref=$(docker inspect -f '{{.Config.Image}}' reader-next) || return 1
     old_id=$(docker inspect -f '{{.Image}}' reader-next) || return 1
-    old_web=$(compose ps -q webview 2>/dev/null) || :
+    old_web=$(webview_container) || :
     if [[ -n $old_web ]]; then
       old_web_ref=$(docker inspect -f '{{.Config.Image}}' "$old_web") || return 1
       old_web_id=$(docker inspect -f '{{.Image}}' "$old_web") || return 1
@@ -1102,6 +1141,12 @@ deploy_reader() (
   if [[ $bundle == 1 ]]; then
     template=docker/docker-compose.webview.yaml
     schema=2.3
+    if [[ -f $STATE_DIR/webview-version ]]; then
+      if ! IFS= read -r WEBVIEW_VERSION < "$STATE_DIR/webview-version" || ! valid_image_tag "$WEBVIEW_VERSION"; then
+        print_error "已保存的 WebView 版本无效：$STATE_DIR/webview-version"
+        return 1
+      fi
+    fi
     if ! docker info --format '{{json .SecurityOptions}}' | grep -q 'name=seccomp'; then
       print_error "当前 Docker 缺少 Chromium 所需的 seccomp 支持"
       return 1
@@ -1357,9 +1402,9 @@ install_ss() {
 
   install_mihomo || exit 1
   write_mihomo_service || exit 1
-  save_info
   write_mihomo_config || exit 1
   restart_mihomo || exit 1
+  save_info || exit 1
 
   print_ok "安装完成"
   show_info
@@ -1454,14 +1499,17 @@ container_state() {
   esac
 }
 
-# Reader 的真实版本号：镜像构建时写在 org.opencontainers.image.version 标签里（比如 v1.0.3），
-# 没有这个标签就退回显示镜像标签（比如 latest）；没有容器时输出为空
-reader_image_version() {
+# 优先显示镜像版本标签，其次显示容器镜像引用里的标签。
+container_image_version() {
   local image version
-  image=$(docker inspect -f '{{.Config.Image}}' reader-next 2>/dev/null) || return 0
-  version=$(docker inspect -f '{{index .Config.Labels "org.opencontainers.image.version"}}' reader-next 2>/dev/null)
+  image=$(docker inspect -f '{{.Config.Image}}' "$1" 2>/dev/null) || return 0
+  version=$(docker inspect -f '{{index .Config.Labels "org.opencontainers.image.version"}}' "$1" 2>/dev/null)
   [[ $version == "<no value>" ]] && version=""
   echo "${version:-${image##*:}}"
+}
+
+reader_image_version() {
+  container_image_version reader-next
 }
 
 # 不是本脚本装的镜像，把镜像名也显示出来
@@ -1488,23 +1536,37 @@ congestion_state() {
 }
 
 show_status() {
-  echo
-  echo -e "Mihomo：$(service_state mihomo)  $(mihomo_current_version)"
-  echo -e "Caddy：$(service_state caddy)  $(caddy_current_version)"
-  echo -e "Docker：$(service_state docker)  $(docker_current_version)"
-  echo -e "Reader：$(container_state reader-next)  $(reader_version)"
-  local webview
-  webview=$(compose ps -q webview 2>/dev/null)
-  if [[ -n $webview ]]; then
-    echo -e "WebView：$(container_state "$webview")  $(docker inspect -f '{{.Config.Image}} {{.State.Health.Status}}' "$webview" 2>/dev/null)"
+  local mode webview docker_version docker_type
+  mode=$(installed_mode) || mode=""
+  case "$mode" in
+    reality) echo -e "Deployment：${Green}Reality + Caddy + Reader${Font}" ;;
+    ss) echo -e "Deployment：${Green}Shadowsocks 2022${Font}" ;;
+    *) echo "Deployment：未找到安装记录" ;;
+  esac
+  echo -e "Mihomo：$(service_state mihomo) $(mihomo_current_version)"
+  if [[ $mode == reality ]]; then
+    echo -e "Caddy：$(service_state caddy) $(caddy_current_version)"
+    docker_version=$(docker_current_version)
+    if command -v docker >/dev/null 2>&1; then
+      case "$(docker_package)" in
+        docker-ce) docker_type="Docker 官方版" ;;
+        docker.io) docker_type="$(docker_system_name) 系统版" ;;
+        *) docker_type="安装来源未知" ;;
+      esac
+    fi
+    echo -e "Docker：$(service_state docker) $docker_version${docker_type:+（$docker_type）}"
+    echo -e "Reader：$(container_state reader-next) $(reader_version)"
+    if webview=$(webview_container); then
+      echo -e "WebView：$(container_state "$webview") $(container_image_version "$webview")"
+    fi
   fi
-  echo -e "时间同步：$(service_state chrony)  $(time_sync_state)"
+  echo -e "时间同步：$(service_state chrony) $(time_sync_state)"
   echo -e "当前时间：$(now_time)"
-  if load_info >/dev/null 2>&1 && [[ $MODE != ss ]]; then
+  if [[ $mode == reality ]] && load_info >/dev/null 2>&1; then
     if cert_exists; then
-      echo -e "SSL 证书：${Green}已申请${Font}  $DOMAIN"
+      echo -e "SSL 证书：${Green}已申请${Font} $DOMAIN"
     else
-      echo -e "SSL 证书：${Red}未申请${Font}  $DOMAIN"
+      echo -e "SSL 证书：${Red}未申请${Font} $DOMAIN"
     fi
   fi
   echo -e "Linux 内核：$(uname -r)"
@@ -1597,35 +1659,237 @@ update_reader() {
   fi
 }
 
-# ─── 11. 更新 Docker ───
-# Docker 是用 apt 装的（官方源的 docker-ce，或系统软件源的 docker.io），这里更新到软件源里的最新版；容器设了 restart: always，会自己起来
+# ─── 11. 更新 / 指定版本 WebView ───
+update_webview() (
+  local webview details old_ref old_id old_running old_version target ref image_id
+  local next="" previous="" version_file="" activated=0 restored="" out failure="" latest=0
+  load_info || return 1
+  require_reality || return 1
+  exec 9>"$STATE_DIR/.reader-deploy.lock" || return 1
+  flock -x 9 || return 1
+  if ! webview=$(webview_container); then
+    echo "未安装 WebView"
+    return 1
+  fi
+  details=$(docker inspect -f '{{.Config.Image}} {{.Image}} {{.State.Running}}' "$webview") || return 1
+  read -r old_ref old_id old_running <<<"$details"
+  if [[ $old_ref != "$WEBVIEW_IMAGE:"* || -z $old_id ]]; then
+    print_error "WebView 容器与本脚本的镜像不匹配"
+    return 1
+  fi
+  old_version=$(container_image_version "$webview")
+
+  read -rp "请输入 WebView 版本号 [回车=最新版]：" target || return 1
+  target=${target//[[:space:]]/}
+  if [[ -z $target ]]; then
+    latest=1
+    print_info "获取 WebView 最新版本"
+    target=$(github_latest_tag "$WEBVIEW_REPO") || {
+      print_error "无法访问 GitHub API，可以手动指定版本号"
+      return 1
+    }
+  fi
+  target=${target#v}
+  valid_image_tag "$target" || { print_error "WebView 版本无效：$target"; return 1; }
+  ref="$WEBVIEW_IMAGE:$target"
+
+  # 保留其他服务和本机配置，只改现有 WebView 的镜像引用。
+  trap 'rm -f -- "${next:-}" "${version_file:-}"; if [[ $activated == 0 ]]; then rm -f -- "${previous:-}"; elif [[ -f $previous ]]; then print_error "原 Compose 配置保存在 $previous"; fi' EXIT
+  next=$(mktemp "$STATE_DIR/.webview-compose.XXXXXX") || return 1
+  previous=$(mktemp "$STATE_DIR/.webview-previous.XXXXXX") || return 1
+  version_file=$(mktemp "$STATE_DIR/.webview-version.XXXXXX") || return 1
+  if ! awk -v old="$old_ref" -v new="$ref" '
+    /^[^[:space:]#]/ { webview = 0 }
+    /^  [^[:space:]#]/ { webview = ($0 ~ /^  webview:[[:space:]]*(#.*)?$/) }
+    webview && /^    image:[[:space:]]/ {
+      image = $2
+      gsub(/["\047]/, "", image)
+      if (image != old) exit 1
+      pos = index($0, $2)
+      print substr($0, 1, pos - 1) new substr($0, pos + length($2))
+      changed++
+      next
+    }
+    { print }
+    END { if (changed != 1) exit 1 }
+  ' "$COMPOSE_FILE" >"$next"; then
+    print_error "WebView 容器与当前 Compose 配置不匹配"
+    return 1
+  fi
+  cp -p "$COMPOSE_FILE" "$previous" && chmod --reference="$COMPOSE_FILE" "$next" &&
+    printf '%s\n' "$target" >"$version_file" || return 1
+  if ! compose_file "$next" config -q; then
+    print_error "Docker Compose 配置校验失败"
+    return 1
+  fi
+
+  print_info "下载 WebView 镜像 $ref"
+  if ! docker pull "$ref"; then
+    print_error "WebView 镜像拉取失败：$ref"
+    return 1
+  fi
+  if ! image_id=$(docker image inspect -f '{{.Id}}' "$ref"); then
+    [[ $ref != "$old_ref" ]] || docker image tag "$old_id" "$old_ref"
+    print_error "无法读取 WebView 镜像：$ref"
+    return 1
+  fi
+  if [[ $ref == "$old_ref" && $image_id == "$old_id" ]] && reader_service_ready webview "$ref" "$image_id"; then
+    if ! mv -fT "$version_file" "$STATE_DIR/webview-version"; then
+      print_error "保存 WebView 版本失败"
+      return 1
+    fi
+    if [[ $latest -eq 1 ]]; then
+      print_ok "WebView 已是最新版 $old_version"
+    else
+      print_ok "WebView 已是 $old_version"
+    fi
+    return 0
+  fi
+
+  if ! mv -fT "$next" "$COMPOSE_FILE"; then
+    [[ $ref != "$old_ref" ]] || docker image tag "$old_id" "$old_ref"
+    print_error "无法替换 WebView Compose 配置"
+    return 1
+  fi
+  activated=1
+  if ! out=$(compose up -d --no-deps webview 2>&1); then
+    printf '%s\n' "$out" | tail -n 8 >&2
+    failure="WebView 启动失败"
+  elif ! reader_service_ready webview "$ref" "$image_id"; then
+    failure="WebView $target 未通过健康检查"
+  elif ! mv -fT "$version_file" "$STATE_DIR/webview-version"; then
+    failure="保存 WebView 版本失败"
+  fi
+  if [[ -n $failure ]]; then
+    print_error "$failure"
+    if ! mv -fT "$previous" "$COMPOSE_FILE"; then
+      print_error "恢复原 Compose 配置失败"
+      return 1
+    fi
+    if docker image tag "$old_id" "$old_ref"; then
+      if [[ $old_running == true ]]; then
+        if compose up -d --no-deps webview && reader_service_ready webview "$old_ref" "$old_id"; then
+          restored=1
+        fi
+      elif compose up --no-start --no-deps webview &&
+           webview=$(webview_container) &&
+           [[ $(docker inspect -f '{{.Config.Image}} {{.Image}} {{.State.Running}}' "$webview") == "$old_ref $old_id false" ]]; then
+        restored=1
+      fi
+    fi
+    if [[ -n $restored ]]; then
+      print_ok "已恢复原 WebView $old_version"
+    else
+      print_error "原 Compose 配置已恢复，WebView 自动恢复未通过"
+    fi
+    return 1
+  fi
+  activated=0
+  print_ok "WebView 已从 $old_version 更新到 $target"
+)
+
+# 匹配完整 APT 版本或简写的引擎版本，并保留 APT 的 epoch 和发行版后缀。
+docker_package_version() {
+  local package=$1 requested=$2 source unused version upstream best=""
+  source=$(apt-cache madison "$package") || return 1
+  while IFS='|' read -r unused version unused; do
+    version=${version//[[:space:]]/}
+    [[ -n $version ]] || continue
+    if [[ $version == "$requested" ]]; then
+      echo "$version"
+      return 0
+    fi
+    upstream=${version#*:}
+    upstream=${upstream%%[-+~]*}
+    if [[ $upstream == "$requested" ]] && { [[ -z $best ]] || dpkg --compare-versions "$version" gt "$best"; }; then
+      best=$version
+    fi
+  done <<<"$source"
+  [[ -n $best ]] && echo "$best"
+}
+
+# ─── 12. 更新 / 指定版本 Docker ───
 update_docker() {
-  local pkgs=() p old new
+  local pkgs=() apt_options=(--only-upgrade --no-remove) p old new package source requested version installed
   load_info || return 1
   require_reality || return 1
   if ! command -v docker >/dev/null 2>&1; then
     print_error "没有安装 Docker"
     return 1
   fi
-  for p in docker.io docker-compose-v2 docker-compose docker-ce docker-ce-cli containerd.io docker-compose-plugin; do
-    [[ $(dpkg-query -W -f='${db:Status-Status}' "$p" 2>/dev/null) == installed ]] && pkgs+=("$p")
-  done
-  if [[ ${#pkgs[@]} -eq 0 ]]; then
+  if ! package=$(docker_package); then
     print_error "Docker 不是用 apt 装的，脚本没法更新它"
     return 1
   fi
+  case "$package" in
+    docker-ce) source="Docker 官方源" ;;
+    docker.io) source="$(docker_system_name) 软件源" ;;
+  esac
+  read -rp "请输入 Docker 版本号 [回车=${source}最新版]：" requested || return 1
+  requested=${requested//[[:space:]]/}
+  if [[ -n $requested ]]; then
+    requested=${requested#v}
+    if [[ ! $requested =~ ^[0-9][0-9A-Za-z.+:~-]*$ ]]; then
+      print_error "Docker 版本无效：$requested"
+      return 1
+    fi
+  fi
+
+  apt_update || return 1
+  if [[ -n $requested ]]; then
+    if ! version=$(docker_package_version "$package" "$requested"); then
+      print_error "${source}找不到 Docker 版本 $requested"
+      return 1
+    fi
+    pkgs=("$package=$version")
+    if [[ $package == docker-ce ]]; then
+      if [[ $(dpkg-query -W -f='${db:Status-Status}' docker-ce-cli 2>/dev/null) != installed ]] ||
+         [[ $(docker_package_version docker-ce-cli "$version") != "$version" ]]; then
+        print_error "找不到已安装的 Docker CLI 或与 Docker $requested 匹配的软件包"
+        return 1
+      fi
+      pkgs+=("docker-ce-cli=$version")
+    fi
+    # 已明确输入版本号时，允许将这组已安装的软件包切换到较旧版本。
+    for p in "${pkgs[@]}"; do
+      installed=$(dpkg-query -W -f='${Version}' "${p%%=*}" 2>/dev/null) || return 1
+      if dpkg --compare-versions "$version" lt "$installed"; then
+        apt_options+=(--allow-downgrades)
+        break
+      fi
+    done
+  else
+    for p in docker.io docker-compose-v2 docker-compose docker-ce docker-ce-cli containerd.io docker-compose-plugin; do
+      [[ $(dpkg-query -W -f='${db:Status-Status}' "$p" 2>/dev/null) == installed ]] && pkgs+=("$p")
+    done
+  fi
+
   old=$(docker_current_version)
   print_info "更新 Docker（${pkgs[*]}）"
-  apt_update || return 1
   if ! DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confold \
-    -y -qq install --only-upgrade "${pkgs[@]}" >/dev/null; then
+    -y -qq install "${apt_options[@]}" "${pkgs[@]}" >/dev/null; then
     print_error "Docker 更新失败"
     return 1
   fi
-  systemctl enable --now docker >/dev/null 2>&1
+  if [[ -n $requested ]]; then
+    for p in "${pkgs[@]}"; do
+      if [[ $(dpkg-query -W -f='${Version}' "${p%%=*}" 2>/dev/null) != "$version" ]]; then
+        print_error "Docker 未切换到指定版本 $requested"
+        return 1
+      fi
+    done
+  fi
+  if ! systemctl enable --now docker >/dev/null 2>&1; then
+    print_error "Docker 服务启动失败"
+    return 1
+  fi
   new=$(docker_current_version)
   if [[ $old == "$new" ]]; then
-    print_ok "Docker 已是软件源里的最新版 $new"
+    if [[ -n $requested ]]; then
+      print_ok "Docker 已是 $new"
+    else
+      print_ok "Docker 已是${source}里的最新版 $new"
+    fi
   else
     print_ok "Docker 已从 $old 更新到 $new"
   fi
@@ -1638,7 +1902,7 @@ update_docker() {
   echo -e "Reader：$(container_state reader-next)  $(reader_version)"
 }
 
-# ─── 12. 重新申请证书 ───
+# ─── 13. 重新申请证书 ───
 reissue_cert() {
   load_info || return 1
   require_reality || return 1
@@ -1648,7 +1912,7 @@ reissue_cert() {
   wait_for_cert
 }
 
-# ─── 13. 更新 Linux 内核 ───
+# ─── 14. 更新 Linux 内核 ───
 # 已安装的具体版本内核包里，除了新内核和正在运行的内核，其余都删掉
 kernel_packages_to_remove() {
   local new_ver=$1 running=$2 pkg ver
@@ -1741,7 +2005,7 @@ update_kernel() {
   fi
 }
 
-# ─── 14. BBR ───
+# ─── 15. BBR ───
 install_bbr() {
   local dir
   dir=$(mktemp -d)
@@ -1799,10 +2063,7 @@ update_script() {
 }
 
 # ─── 菜单 ───
-menu() {
-  is_root
-  detect_system
-
+show_menu() {
   # 标题缩进 3 格
   echo -e "   Mihomo + Reality + Caddy + Reader 一键安装脚本 ${Red}[${SCRIPT_VERSION}]${Font}"
   echo -e "   https://github.com/1432433gg/mihomo-next"
@@ -1821,16 +2082,41 @@ menu() {
   echo -e "${Green}8.${Font}  更新 / 指定版本 Mihomo"
   echo -e "${Green}9.${Font}  更新 / 指定版本 Caddy"
   echo -e "${Green}10.${Font} 更新 / 指定版本 Reader"
-  echo -e "${Green}11.${Font} 更新 Docker"
-  echo -e "${Green}12.${Font} 重新申请 SSL 证书"
+  echo -e "${Green}11.${Font} 更新 / 指定版本 WebView"
+  echo -e "${Green}12.${Font} 更新 / 指定版本 Docker"
+  echo -e "${Green}13.${Font} 重新申请 SSL 证书"
   if [[ $OS_ID == debian ]]; then
-    echo -e "${Green}13.${Font} 更新 Linux 内核"
+    echo -e "${Green}14.${Font} 更新 Linux 内核"
   else
-    echo -e "${Green}13.${Font} 更新 Linux 内核（仅 Debian）"
+    echo -e "${Green}14.${Font} 更新 Linux 内核（仅 Debian）"
   fi
-  echo -e "${Green}14.${Font} 安装 BBR 加速"
+  echo -e "${Green}15.${Font} 安装 BBR 加速"
   echo -e "${Green}0.${Font}  退出"
-  read -rp "请输入数字：" menu_num
+}
+
+menu() {
+  local menu_num mode
+  is_root
+  detect_system
+  while :; do
+    show_menu
+    read -rp "请输入数字：" menu_num || return 0
+    case "$menu_num" in
+      4|5|6|8|9|10|11|12|13)
+        mode=$(installed_mode) || mode=""
+        if [[ $mode != reality && $mode != ss ]]; then
+          if [[ $menu_num == 6 ]]; then
+            echo "未找到安装信息，请先安装（菜单 1 或 2）"
+          else
+            echo "请先通过菜单 1 或 2 完成安装"
+          fi
+          echo
+          continue
+        fi
+        ;;
+    esac
+    break
+  done
   case "$menu_num" in
     1) install_all ;;
     2) install_ss ;;
@@ -1842,10 +2128,11 @@ menu() {
     8) update_mihomo ;;
     9) update_caddy ;;
     10) update_reader ;;
-    11) update_docker ;;
-    12) reissue_cert ;;
-    13) update_kernel ;;
-    14) install_bbr ;;
+    11) update_webview ;;
+    12) update_docker ;;
+    13) reissue_cert ;;
+    14) update_kernel ;;
+    15) install_bbr ;;
     0) exit 0 ;;
     *) print_error "请输入正确的数字" ;;
   esac

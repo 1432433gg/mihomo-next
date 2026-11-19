@@ -39,12 +39,17 @@ wget -N https://raw.githubusercontent.com/1432433gg/mihomo-next/main/install.sh 
 8.  更新 / 指定版本 Mihomo
 9.  更新 / 指定版本 Caddy
 10. 更新 / 指定版本 Reader
-11. 更新 Docker
-12. 重新申请 SSL 证书
-13. 更新 Linux 内核
-14. 安装 BBR 加速
+11. 更新 / 指定版本 WebView
+12. 更新 / 指定版本 Docker
+13. 重新申请 SSL 证书
+14. 更新 Linux 内核
+15. 安装 BBR 加速
 0.  退出
 ```
+
+首次安装前，菜单 3、6、7、14、15 和 0 可直接选择。按 6 没有安装信息，或误选 4、5、8～13 时，脚本先提示，再返回主菜单重选。按 7 显示完状态后回到终端。
+
+菜单 7 首行显示当前部署。Shadowsocks 2022 只显示 Mihomo、时间同步、当前时间、Linux 内核和拥塞控制。Reality 还显示 Caddy、Docker、Reader、SSL 证书和已部署的 WebView；Docker 版本后标明官方版或系统版。Shadowsocks 2022 模式下，菜单 9～13 会提示此模式没有该选项。
 
 ## 组成
 
@@ -80,11 +85,17 @@ chmod +x install.sh
 READER_INSTALL_VERSION=1.2.1 ./install.sh
 ```
 
-旧安装先用菜单 3 更新脚本。克隆仓库安装的用户先在仓库执行 git pull。重新进入脚本后，在菜单 10 输入 1.2.1。脚本 1.0.8 根据拉取的 Reader 镜像选择模板，同时启动 WebView 1.0.0。WebView 只在 Compose 内网可访问。
+旧安装先用菜单 3 更新脚本。克隆仓库安装的用户先在仓库执行 git pull。重新进入脚本后，在菜单 10 输入 1.2.1。脚本根据拉取的 Reader 镜像选择模板，默认随需要 WebView 的 Reader 部署 WebView 1.0.0。WebView 只在 Compose 内网可访问。
 
 回到稳定版时，在菜单 10 输入 1.2.0 或直接回车。两种部署使用同一个 Compose 项目、reader-data 数据卷、reader.env 和 Caddy 入口。已有 reader.env 在切换时原样保留。
 
 1.2.1 的 Reader 或 WebView 镜像拉取失败时，核对版本号、服务器访问 ghcr.io 的网络和镜像的公开状态。启动失败时可从 /etc/mihomo-next 执行 docker compose -p reader-next logs，或在旧环境使用 docker-compose。WebView 需要 Docker 支持 seccomp、init 及可用的 Chromium 沙盒。脚本会检查配置和服务健康状态，切换失败会尝试恢复原部署。
+
+### 单独更新 WebView 和 Docker
+
+- 菜单 11 适用于已部署 WebView 的 Reality 模式。回车使用 WebView Next 最新正式发布版，也可以输入镜像版本号。只切换 WebView 容器，健康检查通过后保存版本，后续更新 Reader 时继续使用。
+- 菜单 12 按本机已安装的 Docker 软件包区分官方版和 Debian／Ubuntu 系统版。回车从当前 APT 软件源更新，输入版本号则切换到软件源已有的版本。使用 Docker 官方版时，Docker Engine 和 CLI 使用对应的同一软件包版本。
+- 版本无效、拉不到指定镜像或软件源没有指定版本时，脚本报错并结束当前操作。重新运行脚本即可重试。
 
 ## 目录
 
@@ -116,3 +127,4 @@ LICENSE                       MIT 许可证
 | `/etc/mihomo-next/info.conf` | 安装方式、域名、端口、UUID、密钥、Shadowsocks 密码 |
 | `/etc/mihomo-next/docker-compose.yaml` | Reader 的 Docker 配置 |
 | `/etc/mihomo-next/reader.env` | Reader 设置 |
+| `/etc/mihomo-next/webview-version` | 单独更新后保存的 WebView 版本 |
