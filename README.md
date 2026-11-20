@@ -48,7 +48,6 @@ wget -N https://raw.githubusercontent.com/1432433gg/mihomo-next/main/install.sh 
 Reader 管理（8）
 1. 更新 / 指定版本 Reader
 2. 安装 / 更新 / 指定版本 WebView
-0. 返回主菜单
 ```
 
 ## 组成
@@ -71,8 +70,6 @@ Mihomo、Caddy 和 Reader 默认关闭服务日志输出。
 - 默认只能注册 1 个账号，注册之后别人就无法再注册
 - 用户名至少 5 位，只能用小写字母和数字；密码至少 8 位
 - 必须登录才能使用
-
-WebView is opt-in. After installing Reality with a compatible Reader image, open Reader management with menu 8. Option 2 installs or updates WebView. Option 1 selects the Reader version independently.
 
 Reader 的更多用法和设置见 [reader-next](https://github.com/1432433gg/reader-next)。
 
@@ -106,4 +103,4 @@ Reader 的更多用法和设置见 [reader-next](https://github.com/1432433gg/re
 | `/etc/mihomo-next/info.conf` | 安装方式、域名、端口、UUID、密钥、Shadowsocks 密码 |
 | `/etc/mihomo-next/docker-compose.yaml` | Reader 的 Docker 配置 |
 | `/etc/mihomo-next/reader.env` | Reader 设置 |
-| `/etc/mihomo-next/webview-version` | Version saved after a successful WebView installation or update |
+| `/etc/mihomo-next/webview-version` | WebView 安装或更新成功后记录的版本号 |
