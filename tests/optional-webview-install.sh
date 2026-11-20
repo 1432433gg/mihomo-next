@@ -25,6 +25,7 @@ reset() {
   INFO_FILE=$STATE_DIR/info.conf
   calls=$STATE_DIR/calls
   fixture_mode=reality
+  fixture_os=debian
   READER_VERSION=latest
   unset READER_INSTALL_VERSION
   printf 'persistent Reader data\n' >"$STATE_DIR/reader-data"
@@ -33,7 +34,7 @@ reset() {
 
 # Intercept system preparation, keeping the installer menu and deployment code.
 is_root() { :; }
-detect_system() { OS_ID=debian; }
+detect_system() { OS_ID=$fixture_os; }
 check_install_mode() { :; }
 read_domain() { DOMAIN=example.invalid; }
 read_port() { PORT=443; }
@@ -48,7 +49,6 @@ finish_reality_reinstall() { :; }
 wait_for_cert() { :; }
 show_info() { :; }
 systemctl() { :; }
-update_docker() { echo "docker version action" >>"$calls"; }
 flock() { [[ "$*" == '-x 9' ]]; }
 sleep() { :; }
 save_info() { printf '%s\n' "$READER_VERSION" >"$INFO_FILE"; }
@@ -484,7 +484,7 @@ for entry in plugin standalone; do
   expect has '10. Reader 管理' "$repo/README.md"
   expect has '1. 更新 / 指定版本 Reader' "$repo/README.md"
   expect has '2. 安装 / 更新 / 指定版本 WebView' "$repo/README.md"
-  reject grep -Eq '^11\.' "$repo/README.md"
+  reject grep -Eq '^15\.' "$repo/README.md"
   snapshot
   clear_calls
   run_ok $'10\n0\n7'
@@ -497,14 +497,56 @@ for entry in plugin standalone; do
   expect has '请输入正确的数字' "$STATE_DIR/menu.log"
   run_ok 10
   reject has '请输入正确的数字' "$STATE_DIR/menu.log"
-  run_ok 11
+  run_ok 15
   expect has '请输入正确的数字' "$STATE_DIR/menu.log"
-  reject grep -Eq '11\..*WebView' "$STATE_DIR/menu.log"
+  sed -E $'s/\033\\[[0-9;]*m//g' "$STATE_DIR/menu.log" |
+    grep -E '^[0-9]+\.' >"$STATE_DIR/menu.rows"
+  awk '/^Reader 管理（10）$/ { exit } /^[0-9]+\./ { print }' "$repo/README.md" >"$STATE_DIR/readme.rows"
+  expect cmp -s "$STATE_DIR/menu.rows" "$STATE_DIR/readme.rows"
+  [[ $(cut -d. -f1 "$STATE_DIR/menu.rows") == "$(seq 1 14; echo 0)" ]] || fail 'unexpected main menu numbering'
+  (menu <<<0 >"$STATE_DIR/menu.log" 2>&1; exit 99) || fail 'main menu 0 did not exit'
   reject test -s "$calls"
-  run_ok 12
-  expect has 'docker version action' "$calls"
+
+  (
+    update_docker() { echo docker >>"$calls"; }
+    reissue_cert() { echo certificate >>"$calls"; }
+    update_kernel() { echo kernel >>"$calls"; }
+    install_bbr() { echo bbr >>"$calls"; }
+
+    for number in 11 12 13 14; do run_ok "$number"; done
+    [[ $(cat "$calls") == $'docker\ncertificate\nkernel\nbbr' ]] || fail 'shifted menu routed to the wrong actions'
+    clear_calls
+    fixture_mode=""
+    for number in 11 12; do
+      run_ok "$number"
+      expect has '请先通过菜单 1 或 2 完成安装' "$STATE_DIR/menu.log"
+    done
+    reject test -s "$calls"
+    run_ok 13
+    run_ok 14
+    [[ $(cat "$calls") == $'kernel\nbbr' ]] || fail 'host action was blocked by install mode'
+  ) || fail 'shifted menu dispatch check failed'
+
+  (
+    clear_calls
+    # Run the original handlers for guard checks with host operations intercepted.
+    apt_update() { echo 'unexpected apt update' >>"$calls"; return 1; }
+    rm() { echo 'unexpected file removal' >>"$calls"; return 1; }
+    systemctl() { echo 'unexpected service change' >>"$calls"; return 1; }
+    use_archive_sources() { echo 'unexpected package source change' >>"$calls"; return 1; }
+    fixture_mode=ss
+    run_fail 11
+    expect has '没有这一项' "$STATE_DIR/menu.log"
+    run_fail 12
+    expect has '没有这一项' "$STATE_DIR/menu.log"
+    fixture_os=ubuntu
+    run_fail 13
+    expect grep -Eq '13\..*更新 Linux 内核（仅 Debian）' "$STATE_DIR/menu.log"
+    expect has '更新 Linux 内核仅支持 Debian' "$STATE_DIR/menu.log"
+    reject test -s "$calls"
+  ) || fail 'shifted menu guard check failed'
   config_unchanged
-  printf 'PASS %s AC-06 submenu navigation, invalid inputs, EOF, Docker dispatch and Compose validation by %s\n' "$entry" "${validator:-fixture}"
+  printf 'PASS %s AC-06 menu labels, navigation, shifted dispatch and guards, and Compose validation by %s\n' "$entry" "${validator:-fixture}"
 
   reset webview-status
   install_reader 1.2.1

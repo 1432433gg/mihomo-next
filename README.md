@@ -39,10 +39,10 @@ wget -N https://raw.githubusercontent.com/1432433gg/mihomo-next/main/install.sh 
 8.  更新 / 指定版本 Mihomo
 9.  更新 / 指定版本 Caddy
 10. Reader 管理
-12. 更新 / 指定版本 Docker
-13. 重新申请 SSL 证书
-14. 更新 Linux 内核
-15. 安装 BBR 加速
+11. 更新 / 指定版本 Docker
+12. 重新申请 SSL 证书
+13. 更新 Linux 内核
+14. 安装 BBR 加速
 0.  退出
 
 Reader 管理（10）

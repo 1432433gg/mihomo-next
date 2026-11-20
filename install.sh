@@ -2046,7 +2046,7 @@ docker_package_version() {
   [[ -n $best ]] && echo "$best"
 }
 
-# ─── 12. 更新 / 指定版本 Docker ───
+# ─── 11. 更新 / 指定版本 Docker ───
 update_docker() {
   local pkgs=() apt_options=(--only-upgrade --no-remove) p old new package source requested version installed
   load_info || return 1
@@ -2140,7 +2140,7 @@ update_docker() {
   echo -e "Reader：$(container_state reader-next)  $(reader_version)"
 }
 
-# ─── 13. 重新申请证书 ───
+# ─── 12. 重新申请证书 ───
 reissue_cert() {
   load_info || return 1
   require_reality || return 1
@@ -2150,7 +2150,7 @@ reissue_cert() {
   wait_for_cert
 }
 
-# ─── 14. 更新 Linux 内核 ───
+# ─── 13. 更新 Linux 内核 ───
 # 已安装的具体版本内核包里，除了新内核和正在运行的内核，其余都删掉
 kernel_packages_to_remove() {
   local new_ver=$1 running=$2 pkg ver
@@ -2243,7 +2243,7 @@ update_kernel() {
   fi
 }
 
-# ─── 15. BBR ───
+# ─── 14. BBR ───
 install_bbr() {
   local dir
   dir=$(mktemp -d)
@@ -2320,14 +2320,14 @@ show_menu() {
   echo -e "${Green}8.${Font}  更新 / 指定版本 Mihomo"
   echo -e "${Green}9.${Font}  更新 / 指定版本 Caddy"
   echo -e "${Green}10.${Font} Reader 管理"
-  echo -e "${Green}12.${Font} 更新 / 指定版本 Docker"
-  echo -e "${Green}13.${Font} 重新申请 SSL 证书"
+  echo -e "${Green}11.${Font} 更新 / 指定版本 Docker"
+  echo -e "${Green}12.${Font} 重新申请 SSL 证书"
   if [[ $OS_ID == debian ]]; then
-    echo -e "${Green}14.${Font} 更新 Linux 内核"
+    echo -e "${Green}13.${Font} 更新 Linux 内核"
   else
-    echo -e "${Green}14.${Font} 更新 Linux 内核（仅 Debian）"
+    echo -e "${Green}13.${Font} 更新 Linux 内核（仅 Debian）"
   fi
-  echo -e "${Green}15.${Font} 安装 BBR 加速"
+  echo -e "${Green}14.${Font} 安装 BBR 加速"
   echo -e "${Green}0.${Font}  退出"
 }
 
@@ -2339,7 +2339,7 @@ menu() {
     show_menu
     read -rp "请输入数字：" menu_num || return 0
     case "$menu_num" in
-      4|5|6|8|9|10|12|13)
+      4|5|6|8|9|10|11|12)
         mode=$(installed_mode) || mode=""
         if [[ $mode != reality && $mode != ss ]]; then
           if [[ $menu_num == 6 ]]; then
@@ -2382,10 +2382,10 @@ menu() {
       ;;
     8) update_mihomo ;;
     9) update_caddy ;;
-    12) update_docker ;;
-    13) reissue_cert ;;
-    14) update_kernel ;;
-    15) install_bbr ;;
+    11) update_docker ;;
+    12) reissue_cert ;;
+    13) update_kernel ;;
+    14) install_bbr ;;
     0) exit 0 ;;
     *) print_error "请输入正确的数字" ;;
   esac
