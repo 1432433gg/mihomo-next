@@ -1574,12 +1574,12 @@ show_status() {
   echo
 }
 
-# ─── 8-10. 更新 ───
+# ─── 9-10. 更新 ───
 update_mihomo() {
   local version
   read -rp "请输入 Mihomo 版本号 [回车=最新版]：" version
   install_mihomo "$(echo "$version" | tr -d '[:space:]')" || return 1
-  # 配置文件被删掉：按默认模板重新生成（想恢复默认配置时就删掉它再选 8）
+  # 配置文件被删掉：按默认模板重新生成（想恢复默认配置时就删掉它再选 9）
   if [[ ! -f $MIHOMO_CONF ]]; then
     load_info >/dev/null 2>&1 || return 0
     print_warn "没有找到 $MIHOMO_CONF，按默认模板重新生成"
@@ -1591,7 +1591,7 @@ update_mihomo() {
   fi
   # 配置文件可能被手动改过：先检查能不能用，再同步到连接信息，有改动就重启让它生效
   if ! check_mihomo_config; then
-    print_warn "$MIHOMO_CONF 有错误，没有同步也没有重启，改好后再选一次 8"
+    print_warn "$MIHOMO_CONF 有错误，没有同步也没有重启，改好后再选一次 9"
     return 1
   fi
   sync_info_from_config
@@ -1829,7 +1829,7 @@ stage_webview_attachment() {
   ' "$TEMPLATE_DIR/docker/docker-compose.webview.yaml" "$COMPOSE_FILE" >"$destination"
 }
 
-# ─── 10 → 2. 安装 / 更新 / 指定版本 WebView ───
+# ─── 8 → 2. 安装 / 更新 / 指定版本 WebView ───
 update_webview() (
   local webview lookup details old_ref="" old_id old_running old_version target ref image_id
   local reader_ref reader_id reader_running label first=0 reader_attempted=0
@@ -1864,7 +1864,7 @@ update_webview() (
     read -r reader_ref reader_id reader_running <<<"$details"
     label=$(docker image inspect -f '{{index .Config.Labels "io.reader-next.bundled-webview"}}' "$reader_id") || return 1
     if [[ $label != 1 ]]; then
-      print_error "当前 Reader 镜像不支持 WebView，请先通过 Reader 管理（菜单 10）中的选项 1 更新 Reader"
+      print_error "当前 Reader 镜像不支持 WebView，请先通过 Reader 管理（菜单 8）中的选项 1 更新 Reader"
       return 1
     fi
     if ! docker info --format '{{json .SecurityOptions}}' | grep -q 'name=seccomp'; then
@@ -2317,9 +2317,9 @@ show_menu() {
   echo -e "${Green}6.${Font}  查看连接信息"
   echo -e "${Green}7.${Font}  查看服务运行状态"
   echo -e "—————— 其他 ——————"
-  echo -e "${Green}8.${Font}  更新 / 指定版本 Mihomo"
-  echo -e "${Green}9.${Font}  更新 / 指定版本 Caddy"
-  echo -e "${Green}10.${Font} Reader 管理"
+  echo -e "${Green}8.${Font}  Reader 管理"
+  echo -e "${Green}9.${Font}  更新 / 指定版本 Mihomo"
+  echo -e "${Green}10.${Font} 更新 / 指定版本 Caddy"
   echo -e "${Green}11.${Font} 更新 / 指定版本 Docker"
   echo -e "${Green}12.${Font} 重新申请 SSL 证书"
   if [[ $OS_ID == debian ]]; then
@@ -2352,7 +2352,7 @@ menu() {
         fi
         ;;
     esac
-    if [[ $menu_num == 10 ]]; then
+    if [[ $menu_num == 8 ]]; then
       echo
       echo "Reader 管理"
       echo -e "${Green}1.${Font} 更新 / 指定版本 Reader"
@@ -2380,8 +2380,8 @@ menu() {
       echo
       show_status
       ;;
-    8) update_mihomo ;;
-    9) update_caddy ;;
+    9) update_mihomo ;;
+    10) update_caddy ;;
     11) update_docker ;;
     12) reissue_cert ;;
     13) update_kernel ;;
