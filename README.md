@@ -44,10 +44,6 @@ wget -N https://raw.githubusercontent.com/1432433gg/mihomo-next/main/install.sh 
 13. 更新 Linux 内核
 14. 安装 BBR 加速
 0.  退出
-
-Reader 管理（8）
-1. 更新 / 指定版本 Reader
-2. 安装 / 更新 / 指定版本 WebView
 ```
 
 ## 组成
@@ -57,7 +53,7 @@ Reader 管理（8）
 | Mihomo | VLESS + Reality 服务端，默认 443 端口；只装 Shadowsocks 2022 时是 Shadowsocks 服务端，默认随机端口（10000-32767）；所有流量直连出站 |
 | Caddy | 监听 80 端口（申请证书、跳转 HTTPS）和本机 8443（Reality 的回落目标），自动申请和续期证书，反代 Reader |
 | Reader | Docker 运行，只在本机 8080 监听，由 Caddy 反代 |
-| WebView | Optional browser rendering for compatible Reader versions, available on the private Compose network |
+| WebView | 为兼容的 Reader 版本提供可选的浏览器渲染，通过 Compose 私有网络访问 |
 | Docker | 用 Docker 官方源安装（连不上时用系统自带的 docker.io） |
 | chrony | 使用谷歌时间服务器，时区 Asia/Shanghai |
 
