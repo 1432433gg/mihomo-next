@@ -1659,12 +1659,60 @@ update_reader() {
   fi
 }
 
+# Compose 1.x can omit the implicit default network that Compose 2.x lists.
+webview_attachment_network() {
+  local file=$1
+  (
+    set -o pipefail
+    compose_file "$file" config | awk '
+      { sub(/\r$/, "") }
+      /^[^[:space:]#]/ { root = $1; service = field = network = "" }
+      /^  [^[:space:]#]/ {
+        field = ""
+        if (root == "services:") { service = $1; sub(/:$/, "", service); seen[service] = 1 }
+        if (root == "networks:") { network = $1; sub(/:$/, "", network) }
+      }
+      root == "networks:" && /^    external:/ && $2 != "false" { external[network] = 1 }
+      root == "services:" && /^    [^[:space:]#-]/ {
+        field = $1
+        if (field == "network_mode:") special[service] = 1
+        if (service == "webview" && field == "ports:") published = 1
+      }
+      root == "services:" && field == "networks:" && /^      [a-zA-Z0-9_.-]+:/ {
+        key = $1
+        sub(/:$/, "", key)
+        member[service, key] = 1
+        count[service]++
+        networks[key] = 1
+      }
+      END {
+        if (!seen["reader"] || !seen["webview"] || published || special["reader"] || special["webview"]) exit 1
+        if (!count["reader"]) { member["reader", "default"] = 1; networks["default"] = 1 }
+        if (!count["webview"]) member["webview", "default"] = 1
+        for (key in networks) {
+          if (!member["reader", key] || external[key]) continue
+          if (member["webview", key]) { print "shared", key; exit }
+          if (choice == "" || key < choice) choice = key
+        }
+        if (choice == "") exit 1
+        print "reader", choice
+      }
+    '
+  )
+}
+
 # Add the WebView service and Reader URL without regenerating the active project.
 stage_webview_attachment() {
-  local target=$1 destination=$2
-  awk -v tag="$target" '
+  local target=$1 destination=$2 network=$3
+  awk -v tag="$target" -v network="$network" '
     FNR == NR {
-      if (/^  webview:[[:space:]]*$/) template_service = 1
+      if (/^  webview:[[:space:]]*$/) {
+        template_service = 1
+        if (network != "") {
+          webview = $0 "\n    networks:\n      " network ": {}\n"
+          next
+        }
+      }
       if (/^[^[:space:]#]/) template_service = 0
       if (template_service) {
         sub(/\{\{WEBVIEW_VERSION\}\}/, tag)
@@ -1708,6 +1756,15 @@ stage_webview_attachment() {
       if (reader) readers++
     }
     reader && environment && /^    [^[:space:]#-]/ { end_environment() }
+    reader && /^    environment:[[:space:]]*\{/ {
+      # Preserve the flow mapping and let YAML merge it beneath the new URL.
+      print "    environment:"
+      print "      REMOTE_WEBVIEW_URL: http://webview:8050"
+      sub(/^    environment:[[:space:]]*/, "      <<: ")
+      print
+      has_environment = 1
+      next
+    }
     reader && /^    environment:/ {
       if ($0 !~ /^    environment:[[:space:]]*(#.*)?$/) exit 1
       environment = 1
@@ -1737,6 +1794,7 @@ stage_webview_attachment() {
 update_webview() (
   local webview lookup details old_ref="" old_id old_running old_version target ref image_id
   local reader_ref reader_id reader_running label first=0 reader_attempted=0
+  local new_service=0 network_model network
   local next="" previous="" version_file="" profile="" TEMPLATE_TMP=""
   local out failure="" latest=0 restored=1
 
@@ -1802,10 +1860,12 @@ update_webview() (
   version_file=$(mktemp "$STATE_DIR/.webview-version.XXXXXX") || return 1
   if [[ $first == 1 ]]; then
     # Reuse a configured service if its container was removed.
-    if ! stage_compose_image webview "" "$ref" "$next" &&
-       ! stage_webview_attachment "$target" "$next"; then
-      print_error "无法将 WebView 加入当前 Compose 配置"
-      return 1
+    if ! stage_compose_image webview "" "$ref" "$next"; then
+      new_service=1
+      if ! stage_webview_attachment "$target" "$next" ""; then
+        print_error "无法将 WebView 加入当前 Compose 配置"
+        return 1
+      fi
     fi
     if [[ ! -f $STATE_DIR/webview-seccomp.json ]]; then
       profile=$(mktemp "$STATE_DIR/.webview-seccomp.XXXXXX") || return 1
@@ -1823,7 +1883,24 @@ update_webview() (
   fi
   cp -p "$COMPOSE_FILE" "$previous" && chmod --reference="$COMPOSE_FILE" "$next" &&
     printf '%s\n' "$target" >"$version_file" || return 1
-  if ! compose_file "$next" config -q; then
+  if [[ $first == 1 ]]; then
+    network_model=$(webview_attachment_network "$next") || network_model=""
+    if [[ $new_service == 1 && $network_model == reader\ * ]]; then
+      network=${network_model#reader }
+      if ! stage_webview_attachment "$target" "$next" "$network"; then
+        print_error "无法将 WebView 加入 Reader 的 Compose 网络"
+        return 1
+      fi
+      if ! docker compose version >/dev/null 2>&1 && ! grep -q '^version:' "$next"; then
+        sed -i '1i version: "2.3"' "$next" || return 1
+      fi
+      network_model=$(webview_attachment_network "$next") || network_model=""
+    fi
+    if [[ $network_model != shared\ * ]]; then
+      print_error "Reader 和 WebView 需要共享本项目的 Compose 网络，且 WebView 不能发布主机端口"
+      return 1
+    fi
+  elif ! compose_file "$next" config -q; then
     print_error "Docker Compose 配置校验失败"
     return 1
   fi

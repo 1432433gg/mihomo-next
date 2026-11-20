@@ -135,6 +135,8 @@ mock_compose() {
       if [[ -n $validator ]]; then
         if command -v cygpath >/dev/null; then cli_path=$(cygpath -aw "$file"); fi
         "$validator" -p reader-next -f "$cli_path" "$@" 2>>"$calls"
+      elif [[ $# == 1 ]]; then
+        cat "$file"
       else
         has '  reader:' "$file"
       fi
@@ -192,6 +194,14 @@ install_webview() { run_ok $'11\nv1.0.0'; }
 snapshot() { cp "$COMPOSE_FILE" "$STATE_DIR/before.yaml"; }
 config_unchanged() { expect cmp -s "$COMPOSE_FILE" "$STATE_DIR/before.yaml"; }
 data_intact() { expect has 'persistent Reader data' "$STATE_DIR/reader-data"; }
+
+resolved_service() {
+  awk -v service="$1" '
+    /^[^[:space:]]/ { services = ($0 == "services:"); selected = 0 }
+    services && /^  [^[:space:]]/ { selected = ($1 == service ":") }
+    selected { print }
+  ' "$2"
+}
 
 for entry in plugin standalone; do
   if [[ $entry == plugin ]]; then validator=${COMPOSE_V2:-}; else validator=${COMPOSE_V1:-}; fi
@@ -293,6 +303,59 @@ for entry in plugin standalone; do
   expect has "$WEBVIEW_IMAGE:1.1.0" "$STATE_DIR/webview.container"
   [[ $(grep -c '^  webview:' "$COMPOSE_FILE") == 1 ]] || fail 'duplicated the configured service'
   printf 'PASS %s AC-03 first install with Enter and explicit tags, private wiring, independent update and status\n' "$entry"
+
+  if [[ -n $validator ]]; then
+    reset explicit-network
+    install_reader 1.2.1
+    sed -i '/^    logging:/i\    networks: [reader-lan]' "$COMPOSE_FILE"
+    printf '\nnetworks:\n  reader-lan: {}\n' >>"$COMPOSE_FILE"
+    expect compose config -q
+    install_webview
+    compose config | tr -d '\r' >"$STATE_DIR/resolved.yaml"
+    expect has '    networks: [reader-lan]' "$COMPOSE_FILE"
+    for service in reader webview; do
+      resolved_service "$service" "$STATE_DIR/resolved.yaml" >"$STATE_DIR/$service.resolved"
+      expect has '      reader-lan:' "$STATE_DIR/$service.resolved"
+    done
+    reject has '    ports:' "$STATE_DIR/webview.resolved"
+    expect has '1.0.0' "$STATE_DIR/webview-version"
+
+    reset network-settings
+    install_reader 1.2.1
+    sed -i '/^    logging:/i\    networks:\n      reader-lan:\n        aliases: [reader-custom]' "$COMPOSE_FILE"
+    printf '\nnetworks:\n  reader-lan: {}\n' >>"$COMPOSE_FILE"
+    expect compose config -q
+    install_webview
+    compose config | tr -d '\r' >"$STATE_DIR/resolved.yaml"
+    resolved_service reader "$STATE_DIR/resolved.yaml" >"$STATE_DIR/reader.resolved"
+    expect has 'reader-custom' "$STATE_DIR/reader.resolved"
+    expect has '1.0.0' "$STATE_DIR/webview-version"
+
+    reset flow-environment
+    install_reader 1.2.1
+    sed -i '/^    logging:/i\    environment: { TZ: Asia/Shanghai, NOTE: "keep, including comma", REMOTE_WEBVIEW_URL: old }' "$COMPOSE_FILE"
+    expect compose config -q
+    install_webview
+    compose config | tr -d '\r' >"$STATE_DIR/resolved.yaml"
+    resolved_service reader "$STATE_DIR/resolved.yaml" >"$STATE_DIR/reader.resolved"
+    expect has 'TZ: Asia/Shanghai' "$STATE_DIR/reader.resolved"
+    expect has 'NOTE: keep, including comma' "$STATE_DIR/reader.resolved"
+    expect has 'REMOTE_WEBVIEW_URL: http://webview:8050' "$STATE_DIR/reader.resolved"
+    expect has '1.0.0' "$STATE_DIR/webview-version"
+
+    reset unshared-external
+    install_reader 1.2.1
+    sed -i '/^    logging:/i\    networks: [reader-lan]' "$COMPOSE_FILE"
+    printf '\nnetworks:\n  reader-lan:\n    external: true\n' >>"$COMPOSE_FILE"
+    expect compose config -q
+    snapshot
+    clear_calls
+    run_fail $'11\n1.0.0'
+    config_unchanged
+    no_webview_actions
+    reject test -e "$STATE_DIR/webview-version"
+    printf 'PASS %s AC-03 review regressions: explicit shared network, preserved network aliases and flow environment\n' "$entry"
+  fi
 
   reset guard-fresh
   fixture_mode=""
