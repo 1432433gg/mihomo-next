@@ -39,7 +39,7 @@ wget -N https://raw.githubusercontent.com/1432433gg/mihomo-next/main/install.sh 
 8.  更新 / 指定版本 Mihomo
 9.  更新 / 指定版本 Caddy
 10. 更新 / 指定版本 Reader
-11. 更新 / 指定版本 WebView
+11. 安装 / 更新 / 指定版本 WebView
 12. 更新 / 指定版本 Docker
 13. 重新申请 SSL 证书
 14. 更新 Linux 内核
@@ -54,7 +54,7 @@ wget -N https://raw.githubusercontent.com/1432433gg/mihomo-next/main/install.sh 
 | Mihomo | VLESS + Reality 服务端，默认 443 端口；只装 Shadowsocks 2022 时是 Shadowsocks 服务端，默认随机端口（10000-32767）；所有流量直连出站 |
 | Caddy | 监听 80 端口（申请证书、跳转 HTTPS）和本机 8443（Reality 的回落目标），自动申请和续期证书，反代 Reader |
 | Reader | Docker 运行，只在本机 8080 监听，由 Caddy 反代 |
-| WebView | 为支持的 Reader 版本渲染动态网页，仅在 Compose 内网可访问 |
+| WebView | Optional browser rendering for compatible Reader versions, available on the private Compose network |
 | Docker | 用 Docker 官方源安装（连不上时用系统自带的 docker.io） |
 | chrony | 使用谷歌时间服务器，时区 Asia/Shanghai |
 
@@ -67,6 +67,8 @@ Mihomo、Caddy 和 Reader 默认关闭服务日志输出。
 - 默认只能注册 1 个账号，注册之后别人就无法再注册
 - 用户名至少 5 位，只能用小写字母和数字；密码至少 8 位
 - 必须登录才能使用
+
+WebView is opt-in. After installing Reality with a compatible Reader image, use menu 11 to install WebView or choose its version. Menu 10 changes only Reader.
 
 Reader 的更多用法和设置见 [reader-next](https://github.com/1432433gg/reader-next)。
 
@@ -100,4 +102,4 @@ Reader 的更多用法和设置见 [reader-next](https://github.com/1432433gg/re
 | `/etc/mihomo-next/info.conf` | 安装方式、域名、端口、UUID、密钥、Shadowsocks 密码 |
 | `/etc/mihomo-next/docker-compose.yaml` | Reader 的 Docker 配置 |
 | `/etc/mihomo-next/reader.env` | Reader 设置 |
-| `/etc/mihomo-next/webview-version` | 单独更新后保存的 WebView 版本 |
+| `/etc/mihomo-next/webview-version` | Version saved after a successful WebView installation or update |

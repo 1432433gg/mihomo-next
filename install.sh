@@ -35,7 +35,6 @@ CADDY_DATA=$CADDY_XDG/caddy
 READER_IMAGE=ghcr.io/1432433gg/reader-next
 WEBVIEW_REPO=1432433gg/webview-next
 WEBVIEW_IMAGE=ghcr.io/1432433gg/webview-next
-WEBVIEW_VERSION=1.0.0
 BBR_SCRIPT_URL=https://raw.githubusercontent.com/ylx2016/Linux-NetSpeed/master/tcp.sh
 # Docker 官方源（download.docker.com）
 DOCKER_REPO=https://download.docker.com/linux
@@ -1000,9 +999,10 @@ webview_container() {
   rows=$(docker ps -a \
     --filter "label=com.docker.compose.project=$COMPOSE_PROJECT" \
     --filter 'label=com.docker.compose.service=webview' \
-    --format '{{.ID}} {{.Label "com.docker.compose.oneoff"}}' 2>/dev/null) || return 1
+    --format '{{.ID}} {{.Label "com.docker.compose.oneoff"}}' 2>/dev/null) || return 2
   id=$(awk 'NF && tolower($2) != "true" { print $1 }' <<<"$rows")
-  [[ -n $id && $id != *$'\n'* ]] || return 1
+  [[ -n $id ]] || return 1
+  [[ $id != *$'\n'* ]] || return 2
   echo "$id"
 }
 
@@ -1102,11 +1102,49 @@ reader_service_ready() {
   return 1
 }
 
-# Stage next to the live file so Compose resolves reader.env and the sandbox profile consistently.
+# Update only the image line in an installer-managed service.
+stage_compose_image() {
+  local service=$1 old=$2 new=$3 destination=$4
+  awk -v service="$service" -v old="$old" -v new="$new" '
+    /^[^[:space:]#]/ { services = ($0 ~ /^services:[[:space:]]*(#.*)?$/); selected = 0 }
+    services && /^  [^[:space:]#]/ {
+      selected = ($0 ~ "^  " service ":[[:space:]]*(#.*)?$")
+    }
+    selected && /^    image:[[:space:]]/ {
+      image = $2
+      gsub(/["\047]/, "", image)
+      if (old != "" && image != old) exit 1
+      match($0, /^    image:[[:space:]]*/)
+      pos = RLENGTH
+      print substr($0, 1, pos) new substr($0, pos + length($2) + 1)
+      changed++
+      next
+    }
+    { print }
+    END { if (changed != 1) exit 1 }
+  ' "$COMPOSE_FILE" >"$destination"
+}
+
+restore_compose_service() {
+  local service=$1 ref=$2 image_id=$3 running=$4 container
+  docker image tag "$image_id" "$ref" || return 1
+  if [[ $running == true ]]; then
+    compose up -d --no-deps "$service" && reader_service_ready "$service" "$ref" "$image_id"
+  else
+    compose up --no-start --no-deps "$service" && compose stop "$service" || return 1
+    if [[ $service == reader ]]; then
+      container=reader-next
+    else
+      container=$(webview_container) || return 1
+    fi
+    [[ $(docker inspect -f '{{.Config.Image}} {{.Image}} {{.State.Running}}' "$container") == "$ref $image_id false" ]]
+  fi
+}
+
+# Stage next to the live file so Compose resolves the same relative paths.
 deploy_reader() (
-  local target=$1 completion=${2:-} reader_ref bundle image_id webview_id next previous="" profile_tmp=""
-  local old_ref old_id old_web_id old_web_ref old_web had_reader=0
-  local WEBVIEW_VERSION=$WEBVIEW_VERSION
+  local target=$1 completion=${2:-} reader_ref image_id next previous=""
+  local old_ref="" old_id old_running details had_reader=0 out failure=""
   valid_image_tag "$target" || { print_error "Reader 版本无效：$target"; return 1; }
   reader_ref="$READER_IMAGE:$target"
   mkdir -p "$STATE_DIR" || return 1
@@ -1118,61 +1156,25 @@ deploy_reader() (
       return 1
     fi
     had_reader=1
-    old_ref=$(docker inspect -f '{{.Config.Image}}' reader-next) || return 1
-    old_id=$(docker inspect -f '{{.Image}}' reader-next) || return 1
-    old_web=$(webview_container) || :
-    if [[ -n $old_web ]]; then
-      old_web_ref=$(docker inspect -f '{{.Config.Image}}' "$old_web") || return 1
-      old_web_id=$(docker inspect -f '{{.Image}}' "$old_web") || return 1
-    fi
-  fi
-  print_info "下载 Reader 镜像 $reader_ref"
-  if ! docker pull "$reader_ref"; then
-    print_error "Reader 镜像拉取失败：$reader_ref"
-    return 1
-  fi
-  image_id=$(docker image inspect -f '{{.Id}}' "$reader_ref") || return 1
-  bundle=$(docker image inspect -f '{{index .Config.Labels "io.reader-next.bundled-webview"}}' "$reader_ref") || return 1
-  if [[ $target == 1.2.1 && $bundle != 1 ]]; then
-    print_error "Reader 1.2.1 镜像缺少 WebView 能力标签：$reader_ref"
-    return 1
-  fi
-  local template=docker/docker-compose.yaml schema=3.3
-  if [[ $bundle == 1 ]]; then
-    template=docker/docker-compose.webview.yaml
-    schema=2.3
-    if [[ -f $STATE_DIR/webview-version ]]; then
-      if ! IFS= read -r WEBVIEW_VERSION < "$STATE_DIR/webview-version" || ! valid_image_tag "$WEBVIEW_VERSION"; then
-        print_error "已保存的 WebView 版本无效：$STATE_DIR/webview-version"
-        return 1
-      fi
-    fi
-    if ! docker info --format '{{json .SecurityOptions}}' | grep -q 'name=seccomp'; then
-      print_error "当前 Docker 缺少 Chromium 所需的 seccomp 支持"
-      return 1
-    fi
-    print_info "下载 WebView 镜像 $WEBVIEW_IMAGE:$WEBVIEW_VERSION"
-    if ! docker pull "$WEBVIEW_IMAGE:$WEBVIEW_VERSION"; then
-      print_error "WebView 镜像拉取失败：$WEBVIEW_IMAGE:$WEBVIEW_VERSION"
-      return 1
-    fi
-    webview_id=$(docker image inspect -f '{{.Id}}' "$WEBVIEW_IMAGE:$WEBVIEW_VERSION") || return 1
+    details=$(docker inspect -f '{{.Config.Image}} {{.Image}} {{.State.Running}}' reader-next) || return 1
+    read -r old_ref old_id old_running <<<"$details"
   fi
 
-  # Template preparation owns its own EXIT trap when called from the menu.
   next=$(mktemp "$STATE_DIR/.reader-compose.XXXXXX") || return 1
-  trap 'rm -f "$next" ${profile_tmp:+"$profile_tmp"} ${previous:+"$previous"}' EXIT
+  trap 'rm -f "$next" ${previous:+"$previous"}' EXIT
   if [[ ! -f $READER_ENV ]]; then
     render_template reader/reader.env "$READER_ENV" || return 1
   fi
-  if [[ $bundle == 1 ]] && ! cmp -s "$TEMPLATE_DIR/docker/webview-seccomp.json" "$STATE_DIR/webview-seccomp.json"; then
-    profile_tmp=$(mktemp "$STATE_DIR/.webview-seccomp.XXXXXX") || return 1
-    cp "$TEMPLATE_DIR/docker/webview-seccomp.json" "$profile_tmp" || return 1
-    mv -f "$profile_tmp" "$STATE_DIR/webview-seccomp.json" || return 1
+  if [[ -f $COMPOSE_FILE ]]; then
+    if ! stage_compose_image reader "$old_ref" "$reader_ref" "$next"; then
+      print_error "Reader 容器与当前 Compose 配置不匹配"
+      return 1
+    fi
+  else
+    render_template docker/docker-compose.yaml "$next" READER_VERSION="$target" || return 1
   fi
-  render_template "$template" "$next" READER_VERSION="$target" WEBVIEW_VERSION="$WEBVIEW_VERSION" || return 1
-  if ! docker compose version >/dev/null 2>&1; then
-    sed -i "1i version: \"$schema\"" "$next" || return 1
+  if ! docker compose version >/dev/null 2>&1 && ! grep -q '^version:' "$next"; then
+    sed -i '1i version: "2.3"' "$next" || return 1
   fi
   if ! compose_file "$next" config -q; then
     print_error "Docker Compose 配置校验失败，请检查 Compose 版本和模板"
@@ -1181,16 +1183,25 @@ deploy_reader() (
 
   if [[ -f $COMPOSE_FILE ]]; then
     previous=$(mktemp "$STATE_DIR/.reader-previous.XXXXXX") || return 1
-    cp -p "$COMPOSE_FILE" "$previous" || return 1
+    cp -p "$COMPOSE_FILE" "$previous" && chmod --reference="$COMPOSE_FILE" "$next" || return 1
   fi
-  mv -f "$next" "$COMPOSE_FILE" || return 1
+  print_info "下载 Reader 镜像 $reader_ref"
+  if ! docker pull "$reader_ref"; then
+    print_error "Reader 镜像拉取失败：$reader_ref"
+    return 1
+  fi
+  if ! image_id=$(docker image inspect -f '{{.Id}}' "$reader_ref") ||
+     ! mv -fT "$next" "$COMPOSE_FILE"; then
+    if [[ $had_reader == 1 && $reader_ref == "$old_ref" ]]; then
+      docker image tag "$old_id" "$old_ref"
+    fi
+    print_error "无法读取 Reader 镜像或替换 Compose 配置"
+    return 1
+  fi
 
-  local out failure=""
-  if ! out=$(compose up -d --remove-orphans 2>&1); then
+  if ! out=$(compose up -d --no-deps reader 2>&1); then
     printf '%s\n' "$out" | tail -n 8 >&2
     failure="Docker Compose 启动失败"
-  elif [[ $bundle == 1 ]] && ! reader_service_ready webview "$WEBVIEW_IMAGE:$WEBVIEW_VERSION" "$webview_id"; then
-    failure="WebView $WEBVIEW_VERSION 未通过健康检查"
   elif ! reader_service_ready reader "$reader_ref" "$image_id"; then
     failure="Reader $target 未通过健康检查"
   elif [[ $completion == save-info ]] && ! save_info; then
@@ -1200,15 +1211,11 @@ deploy_reader() (
   fi
   if [[ -n $failure ]]; then
     print_error "$failure"
-    # A failed pull or validation leaves the current deployment running. If up
-    # changed the containers, restore the preceding local image and Compose file.
-    if [[ $had_reader == 0 ]]; then
-      if ! compose down --remove-orphans; then
-        print_error "请检查失败部署的容器，数据卷已保留"
-      fi
+    if [[ $had_reader == 0 ]] && ! compose rm -f -s reader; then
+      print_error "请检查失败部署的容器，数据卷已保留"
     fi
     if [[ -n $previous ]]; then
-      if ! mv -f "$previous" "$COMPOSE_FILE"; then
+      if ! mv -fT "$previous" "$COMPOSE_FILE"; then
         print_error "无法恢复 Compose 文件，原配置保存在 $previous"
         previous=""
         return 1
@@ -1217,11 +1224,7 @@ deploy_reader() (
       rm -f "$COMPOSE_FILE"
     fi
     if [[ $had_reader == 1 ]]; then
-      if docker image tag "$old_id" "$old_ref" &&
-         { [[ -z $old_web_id ]] || docker image tag "$old_web_id" "$old_web_ref"; } &&
-         compose up -d --remove-orphans &&
-         { [[ -z $old_web_id ]] || reader_service_ready webview "$old_web_ref" "$old_web_id"; } &&
-         reader_service_ready reader "$old_ref" "$old_id"; then
+      if restore_compose_service reader "$old_ref" "$old_id" "$old_running"; then
         print_ok "已恢复原 Reader 部署和数据卷"
       else
         print_error "原配置和数据卷已保留，自动恢复未通过。请检查 Docker 日志后重试。"
@@ -1230,9 +1233,6 @@ deploy_reader() (
     return 1
   fi
   print_ok "Reader $target 运行中"
-  if [[ $bundle == 1 ]]; then
-    print_ok "WebView $WEBVIEW_VERSION 运行中"
-  fi
 )
 
 prepare_reality_ports() {
@@ -1659,25 +1659,122 @@ update_reader() {
   fi
 }
 
-# ─── 11. 更新 / 指定版本 WebView ───
+# Add the WebView service and Reader URL without regenerating the active project.
+stage_webview_attachment() {
+  local target=$1 destination=$2
+  awk -v tag="$target" '
+    FNR == NR {
+      if (/^  webview:[[:space:]]*$/) template_service = 1
+      if (/^[^[:space:]#]/) template_service = 0
+      if (template_service) {
+        sub(/\{\{WEBVIEW_VERSION\}\}/, tag)
+        webview = webview $0 "\n"
+      }
+      next
+    }
+    function reader_url() {
+      print env_indent (env_list ? "- REMOTE_WEBVIEW_URL=" : "REMOTE_WEBVIEW_URL: ") "http://webview:8050"
+    }
+    function end_environment() {
+      if (environment == 1) { env_indent = "      "; env_list = 0; reader_url() }
+      environment = 0
+    }
+    function end_reader() {
+      end_environment()
+      if (reader && !has_environment) {
+        print "    environment:"
+        env_indent = "      "; env_list = 0; reader_url()
+      }
+      reader = 0
+    }
+    /^[^[:space:]#]/ {
+      end_reader()
+      services = ($0 ~ /^services:[[:space:]]*(#.*)?$/)
+      if (services) {
+        print
+        printf "%s", webview
+        inserted++
+        next
+      }
+      # The old standalone Reader-only template used the v3.3 schema.
+      if ($0 ~ /^version:[[:space:]]*["\047]?3\.3["\047]?([[:space:]]|$)/) {
+        sub(/["\047]?3\.3["\047]?/, "\"2.3\"")
+      }
+    }
+    services && /^  [^[:space:]#]/ {
+      end_reader()
+      if ($0 ~ /^  webview:[[:space:]]*(#.*)?$/) exit 1
+      reader = ($0 ~ /^  reader:[[:space:]]*(#.*)?$/)
+      if (reader) readers++
+    }
+    reader && environment && /^    [^[:space:]#-]/ { end_environment() }
+    reader && /^    environment:/ {
+      if ($0 !~ /^    environment:[[:space:]]*(#.*)?$/) exit 1
+      environment = 1
+      has_environment = 1
+      print
+      next
+    }
+    environment && /^    +[^[:space:]#]/ {
+      if (environment == 1) {
+        match($0, /^ +/)
+        env_indent = substr($0, 1, RLENGTH)
+        env_list = (substr($0, RLENGTH + 1, 1) == "-")
+        reader_url()
+        environment = 2
+      }
+      if ($0 ~ /^[[:space:]]*(-[[:space:]]+)?["\047]?REMOTE_WEBVIEW_URL([:"\047=[:space:]]|$)/) next
+    }
+    { print }
+    END {
+      end_reader()
+      if (webview == "" || inserted != 1 || readers != 1) exit 1
+    }
+  ' "$TEMPLATE_DIR/docker/docker-compose.webview.yaml" "$COMPOSE_FILE" >"$destination"
+}
+
+# ─── 11. 安装 / 更新 / 指定版本 WebView ───
 update_webview() (
-  local webview details old_ref old_id old_running old_version target ref image_id
-  local next="" previous="" version_file="" activated=0 restored="" out failure="" latest=0
+  local webview lookup details old_ref="" old_id old_running old_version target ref image_id
+  local reader_ref reader_id reader_running label first=0 reader_attempted=0
+  local next="" previous="" version_file="" profile="" TEMPLATE_TMP=""
+  local out failure="" latest=0 restored=1
+
   load_info || return 1
   require_reality || return 1
   exec 9>"$STATE_DIR/.reader-deploy.lock" || return 1
   flock -x 9 || return 1
-  if ! webview=$(webview_container); then
-    echo "未安装 WebView"
-    return 1
+  if webview=$(webview_container); then
+    details=$(docker inspect -f '{{.Config.Image}} {{.Image}} {{.State.Running}}' "$webview") || return 1
+    read -r old_ref old_id old_running <<<"$details"
+    if [[ $old_ref != "$WEBVIEW_IMAGE:"* || -z $old_id ]]; then
+      print_error "WebView 容器与本脚本的镜像不匹配"
+      return 1
+    fi
+    old_version=$(container_image_version "$webview")
+  else
+    lookup=$?
+    if [[ $lookup != 1 ]]; then
+      print_error "无法唯一识别项目的 WebView 容器"
+      return 1
+    fi
+    first=1
+    if [[ ! -f $COMPOSE_FILE ]] || ! reader_owned; then
+      print_error "未找到本项目的 Reader，请先通过菜单 1 安装"
+      return 1
+    fi
+    details=$(docker inspect -f '{{.Config.Image}} {{.Image}} {{.State.Running}}' reader-next) || return 1
+    read -r reader_ref reader_id reader_running <<<"$details"
+    label=$(docker image inspect -f '{{index .Config.Labels "io.reader-next.bundled-webview"}}' "$reader_id") || return 1
+    if [[ $label != 1 ]]; then
+      print_error "当前 Reader 镜像不支持 WebView，请先通过菜单 10 更新 Reader"
+      return 1
+    fi
+    if ! docker info --format '{{json .SecurityOptions}}' | grep -q 'name=seccomp'; then
+      print_error "当前 Docker 缺少 Chromium 所需的 seccomp 支持"
+      return 1
+    fi
   fi
-  details=$(docker inspect -f '{{.Config.Image}} {{.Image}} {{.State.Running}}' "$webview") || return 1
-  read -r old_ref old_id old_running <<<"$details"
-  if [[ $old_ref != "$WEBVIEW_IMAGE:"* || -z $old_id ]]; then
-    print_error "WebView 容器与本脚本的镜像不匹配"
-    return 1
-  fi
-  old_version=$(container_image_version "$webview")
 
   read -rp "请输入 WebView 版本号 [回车=最新版]：" target || return 1
   target=${target//[[:space:]]/}
@@ -1693,28 +1790,36 @@ update_webview() (
   valid_image_tag "$target" || { print_error "WebView 版本无效：$target"; return 1; }
   ref="$WEBVIEW_IMAGE:$target"
 
-  # 保留其他服务和本机配置，只改现有 WebView 的镜像引用。
-  trap 'rm -f -- "${next:-}" "${version_file:-}"; if [[ $activated == 0 ]]; then rm -f -- "${previous:-}"; elif [[ -f $previous ]]; then print_error "原 Compose 配置保存在 $previous"; fi' EXIT
+  if [[ $first == 1 ]]; then
+    prepare_templates || return 1
+  fi
+  trap '
+    [[ -z $TEMPLATE_TMP ]] || rm -rf -- "$TEMPLATE_TMP"
+    rm -f -- "${next:-}" "${version_file:-}" "${profile:-}" "${previous:-}"
+  ' EXIT
   next=$(mktemp "$STATE_DIR/.webview-compose.XXXXXX") || return 1
   previous=$(mktemp "$STATE_DIR/.webview-previous.XXXXXX") || return 1
   version_file=$(mktemp "$STATE_DIR/.webview-version.XXXXXX") || return 1
-  if ! awk -v old="$old_ref" -v new="$ref" '
-    /^[^[:space:]#]/ { webview = 0 }
-    /^  [^[:space:]#]/ { webview = ($0 ~ /^  webview:[[:space:]]*(#.*)?$/) }
-    webview && /^    image:[[:space:]]/ {
-      image = $2
-      gsub(/["\047]/, "", image)
-      if (image != old) exit 1
-      pos = index($0, $2)
-      print substr($0, 1, pos - 1) new substr($0, pos + length($2))
-      changed++
-      next
-    }
-    { print }
-    END { if (changed != 1) exit 1 }
-  ' "$COMPOSE_FILE" >"$next"; then
+  if [[ $first == 1 ]]; then
+    # Reuse a configured service if its container was removed.
+    if ! stage_compose_image webview "" "$ref" "$next" &&
+       ! stage_webview_attachment "$target" "$next"; then
+      print_error "无法将 WebView 加入当前 Compose 配置"
+      return 1
+    fi
+    if [[ ! -f $STATE_DIR/webview-seccomp.json ]]; then
+      profile=$(mktemp "$STATE_DIR/.webview-seccomp.XXXXXX") || return 1
+      cp "$TEMPLATE_DIR/docker/webview-seccomp.json" "$profile" &&
+        mv -fT "$profile" "$STATE_DIR/webview-seccomp.json" || return 1
+      # Keep the new profile for staged validation and remove it on failure.
+      profile="$STATE_DIR/webview-seccomp.json"
+    fi
+  elif ! stage_compose_image webview "$old_ref" "$ref" "$next"; then
     print_error "WebView 容器与当前 Compose 配置不匹配"
     return 1
+  fi
+  if ! docker compose version >/dev/null 2>&1 && ! grep -q '^version:' "$next"; then
+    sed -i '1i version: "2.3"' "$next" || return 1
   fi
   cp -p "$COMPOSE_FILE" "$previous" && chmod --reference="$COMPOSE_FILE" "$next" &&
     printf '%s\n' "$target" >"$version_file" || return 1
@@ -1738,7 +1843,7 @@ update_webview() (
       print_error "保存 WebView 版本失败"
       return 1
     fi
-    if [[ $latest -eq 1 ]]; then
+    if [[ $latest == 1 ]]; then
       print_ok "WebView 已是最新版 $old_version"
     else
       print_ok "WebView 已是 $old_version"
@@ -1751,41 +1856,58 @@ update_webview() (
     print_error "无法替换 WebView Compose 配置"
     return 1
   fi
-  activated=1
   if ! out=$(compose up -d --no-deps webview 2>&1); then
     printf '%s\n' "$out" | tail -n 8 >&2
     failure="WebView 启动失败"
   elif ! reader_service_ready webview "$ref" "$image_id"; then
     failure="WebView $target 未通过健康检查"
-  elif ! mv -fT "$version_file" "$STATE_DIR/webview-version"; then
+  elif [[ $first == 1 ]]; then
+    # Reuse the actual installed Reader image even if its tag moved.
+    if [[ $(docker image inspect -f '{{.Id}}' "$reader_ref" 2>/dev/null) != "$reader_id" ]] &&
+       ! docker image tag "$reader_id" "$reader_ref"; then
+      failure="无法保留当前 Reader 镜像"
+    else
+      reader_attempted=1
+      if ! compose up -d --no-deps reader || ! reader_service_ready reader "$reader_ref" "$reader_id"; then
+        failure="Reader 连接 WebView 后未能启动"
+      fi
+    fi
+  fi
+  if [[ -z $failure ]] && ! mv -fT "$version_file" "$STATE_DIR/webview-version"; then
     failure="保存 WebView 版本失败"
   fi
   if [[ -n $failure ]]; then
     print_error "$failure"
+    if [[ $first == 1 ]] && ! compose rm -f -s webview; then
+      print_error "未能清理本次创建的 WebView 容器"
+      restored=0
+    fi
     if ! mv -fT "$previous" "$COMPOSE_FILE"; then
-      print_error "恢复原 Compose 配置失败"
+      print_error "无法恢复 Compose 文件，原配置保存在 $previous"
+      previous=""
+      profile=""
       return 1
     fi
-    if docker image tag "$old_id" "$old_ref"; then
-      if [[ $old_running == true ]]; then
-        if compose up -d --no-deps webview && reader_service_ready webview "$old_ref" "$old_id"; then
-          restored=1
-        fi
-      elif compose up --no-start --no-deps webview &&
-           webview=$(webview_container) &&
-           [[ $(docker inspect -f '{{.Config.Image}} {{.Image}} {{.State.Running}}' "$webview") == "$old_ref $old_id false" ]]; then
-        restored=1
+    if [[ $first == 1 ]]; then
+      if [[ $reader_attempted == 1 ]] && ! restore_compose_service reader "$reader_ref" "$reader_id" "$reader_running"; then
+        restored=0
       fi
+    elif ! restore_compose_service webview "$old_ref" "$old_id" "$old_running"; then
+      restored=0
     fi
-    if [[ -n $restored ]]; then
-      print_ok "已恢复原 WebView $old_version"
+    if [[ $restored == 1 ]]; then
+      print_ok "已恢复原部署"
     else
-      print_error "原 Compose 配置已恢复，WebView 自动恢复未通过"
+      print_error "原 Compose 配置已恢复，容器自动恢复未通过"
     fi
     return 1
   fi
-  activated=0
-  print_ok "WebView 已从 $old_version 更新到 $target"
+  profile=""
+  if [[ $first == 1 ]]; then
+    print_ok "WebView $target 已安装"
+  else
+    print_ok "WebView 已从 $old_version 更新到 $target"
+  fi
 )
 
 # 匹配完整 APT 版本或简写的引擎版本，并保留 APT 的 epoch 和发行版后缀。
@@ -2082,7 +2204,7 @@ show_menu() {
   echo -e "${Green}8.${Font}  更新 / 指定版本 Mihomo"
   echo -e "${Green}9.${Font}  更新 / 指定版本 Caddy"
   echo -e "${Green}10.${Font} 更新 / 指定版本 Reader"
-  echo -e "${Green}11.${Font} 更新 / 指定版本 WebView"
+  echo -e "${Green}11.${Font} 安装 / 更新 / 指定版本 WebView"
   echo -e "${Green}12.${Font} 更新 / 指定版本 Docker"
   echo -e "${Green}13.${Font} 重新申请 SSL 证书"
   if [[ $OS_ID == debian ]]; then
