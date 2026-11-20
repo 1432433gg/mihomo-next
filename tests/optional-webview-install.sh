@@ -48,6 +48,7 @@ finish_reality_reinstall() { :; }
 wait_for_cert() { :; }
 show_info() { :; }
 systemctl() { :; }
+update_docker() { echo "docker version action" >>"$calls"; }
 flock() { [[ "$*" == '-x 9' ]]; }
 sleep() { :; }
 save_info() { printf '%s\n' "$READER_VERSION" >"$INFO_FILE"; }
@@ -114,7 +115,9 @@ docker() {
         '{{.Config.Image}}') echo "$ref" ;;
         '{{.Image}}') echo "$id" ;;
         '{{.State.Running}}') echo "$running" ;;
-        '{{.State.Status}}') echo "$health" ;;
+        '{{.State.Status}}')
+          if [[ $running == true ]]; then echo running; else echo "$health"; fi
+          ;;
         '') : ;;
         *) return 1 ;;
       esac
@@ -190,7 +193,7 @@ mock_compose() {
 run_ok() { menu <<<"$1" >"$STATE_DIR/menu.log" 2>&1 || { cat "$STATE_DIR/menu.log" >&2; fail "menu $1 failed"; }; }
 run_fail() { if menu <<<"$1" >"$STATE_DIR/menu.log" 2>&1; then fail "menu $1 succeeded"; fi; }
 install_reader() { READER_INSTALL_VERSION=$1; run_ok 1; }
-install_webview() { run_ok $'11\nv1.0.0'; }
+install_webview() { run_ok $'10\n2\nv1.0.0'; }
 snapshot() { cp "$COMPOSE_FILE" "$STATE_DIR/before.yaml"; }
 config_unchanged() { expect cmp -s "$COMPOSE_FILE" "$STATE_DIR/before.yaml"; }
 data_intact() { expect has 'persistent Reader data' "$STATE_DIR/reader-data"; }
@@ -219,7 +222,7 @@ for entry in plugin standalone; do
   install_reader 1.2.0
   printf 'stale\n' >"$STATE_DIR/webview-version"
   clear_calls
-  run_ok $'10\nv1.2.1'
+  run_ok $'10\n1\nv1.2.1'
   expect has "$READER_IMAGE:1.2.1" "$COMPOSE_FILE"
   expect has 'stale' "$STATE_DIR/webview-version"
   reject has '  webview:' "$COMPOSE_FILE"
@@ -232,7 +235,7 @@ for entry in plugin standalone; do
   sed 's/{{READER_VERSION}}/1.2.1/g; s/{{WEBVIEW_VERSION}}/1.0.0/g' "$repo/docker/docker-compose.webview.yaml" >>"$COMPOSE_FILE"
   cp "$STATE_DIR/webview.container" "$STATE_DIR/webview.expected"
   clear_calls
-  run_ok $'10\n1.2.1'
+  run_ok $'10\n1\n1.2.1'
   expect cmp -s "$STATE_DIR/webview.expected" "$STATE_DIR/webview.container"
   no_webview_actions
   sed -i 's/ true healthy / false exited /' "$STATE_DIR/webview.container"
@@ -240,7 +243,7 @@ for entry in plugin standalone; do
   snapshot
   for tag in 1.2.0 1.2.1; do
     clear_calls
-    run_ok "$(printf '10\n%s' "$tag")"
+    run_ok "$(printf '10\n1\n%s' "$tag")"
     expect has "$READER_IMAGE:$tag" "$COMPOSE_FILE"
     expect cmp -s "$STATE_DIR/webview.expected" "$STATE_DIR/webview.container"
     diff -u <(sed '/^    image: .*reader-next:/d' "$STATE_DIR/before.yaml") \
@@ -254,7 +257,7 @@ for entry in plugin standalone; do
   # The existing project stays intact even when its Reader container was removed.
   rm "$STATE_DIR/reader.container"
   clear_calls
-  run_ok $'10\n1.2.0'
+  run_ok $'10\n1\n1.2.0'
   expect has "$READER_IMAGE:1.2.0" "$COMPOSE_FILE"
   expect has "$WEBVIEW_IMAGE:1.0.0" "$COMPOSE_FILE"
   expect cmp -s "$STATE_DIR/webview.expected" "$STATE_DIR/webview.container"
@@ -268,7 +271,7 @@ for entry in plugin standalone; do
   cp "$READER_ENV" "$STATE_DIR/reader.env.expected"
   echo sha256:reader-next:1.2.1-moved >"$STATE_DIR/reader-next:1.2.1.tag"
   clear_calls
-  run_ok $'11\n\n'
+  run_ok $'10\n2\n\n'
   expect has 'latest 1432433gg/webview-next' "$calls"
   expect has 'REMOTE_WEBVIEW_URL=http://webview:8050' "$COMPOSE_FILE"
   expect has 'KEEP_ME=value' "$COMPOSE_FILE"
@@ -281,10 +284,10 @@ for entry in plugin standalone; do
   expect has '1.1.0' "$STATE_DIR/webview-version"
   [[ $(sed -n '/^  webview:/,/^  reader:/p' "$COMPOSE_FILE") != *ports:* ]] || fail 'WebView has a host port'
   data_intact
-  run_ok $'10\n1.2.0'
+  run_ok $'10\n1\n1.2.0'
   cp "$STATE_DIR/reader.container" "$STATE_DIR/reader.expected"
   clear_calls
-  run_ok $'11\nv1.2.0'
+  run_ok $'10\n2\nv1.2.0'
   reject has 'latest ' "$calls"
   reject has 'compose up -d --no-deps reader' "$calls"
   expect cmp -s "$STATE_DIR/reader.expected" "$STATE_DIR/reader.container"
@@ -299,7 +302,7 @@ for entry in plugin standalone; do
   expect has "$WEBVIEW_IMAGE:1.0.0" "$STATE_DIR/webview.container"
   reject has 'latest ' "$calls"
   rm "$STATE_DIR/webview.container"
-  run_ok $'11\n1.1.0'
+  run_ok $'10\n2\n1.1.0'
   expect has "$WEBVIEW_IMAGE:1.1.0" "$STATE_DIR/webview.container"
   [[ $(grep -c '^  webview:' "$COMPOSE_FILE") == 1 ]] || fail 'duplicated the configured service'
   printf 'PASS %s AC-03 first install with Enter and explicit tags, private wiring, independent update and status\n' "$entry"
@@ -350,7 +353,7 @@ for entry in plugin standalone; do
     expect compose config -q
     snapshot
     clear_calls
-    run_fail $'11\n1.0.0'
+    run_fail $'10\n2\n1.0.0'
     config_unchanged
     no_webview_actions
     reject test -e "$STATE_DIR/webview-version"
@@ -359,14 +362,17 @@ for entry in plugin standalone; do
 
   reset guard-fresh
   fixture_mode=""
-  run_ok 11
+  run_ok 10
   expect has '请先通过菜单 1 或 2 完成安装' "$STATE_DIR/menu.log"
   no_webview_actions
   reset guard-ss
   fixture_mode=ss
   touch "$INFO_FILE"
-  run_fail $'11\n1.0.0'
-  no_webview_actions
+  run_fail $'10\n1\n1.2.1'
+  expect has '没有这一项' "$STATE_DIR/menu.log"
+  run_fail $'10\n2\n1.0.0'
+  expect has '没有这一项' "$STATE_DIR/menu.log"
+  reject grep -Eq '^pull|^compose (up|stop|rm)' "$calls"
   reject test -e "$COMPOSE_FILE"
   run_ok 7
   expect has 'Shadowsocks 2022' "$STATE_DIR/menu.log"
@@ -374,8 +380,8 @@ for entry in plugin standalone; do
   reset guard-reader
   install_reader 1.2.0
   snapshot
-  run_fail $'11\n1.0.0'
-  expect has '菜单 10' "$STATE_DIR/menu.log"
+  run_fail $'10\n2\n1.0.0'
+  expect has 'Reader 管理（菜单 10）中的选项 1' "$STATE_DIR/menu.log"
   config_unchanged
   no_webview_actions
   printf 'PASS %s AC-04 fresh host, Shadowsocks, incompatible Reader guards\n' "$entry"
@@ -385,13 +391,13 @@ for entry in plugin standalone; do
   snapshot
   cp "$STATE_DIR/reader.container" "$STATE_DIR/reader.expected"
   printf 'stale\n' >"$STATE_DIR/webview-version"
-  run_fail $'11\ninvalid:tag'
+  run_fail $'10\n2\ninvalid:tag'
   config_unchanged
-  run_fail $'11\nmissing'
+  run_fail $'10\n2\nmissing'
   config_unchanged
   for failure in startup unhealthy; do
     echo "$failure" >"$STATE_DIR/fail-webview"
-    run_fail $'11\n1.0.0'
+    run_fail $'10\n2\n1.0.0'
     config_unchanged
     expect cmp -s "$STATE_DIR/reader.expected" "$STATE_DIR/reader.container"
     reject test -e "$STATE_DIR/webview.container"
@@ -400,7 +406,7 @@ for entry in plugin standalone; do
   done
   echo startup >"$STATE_DIR/fail-reader"
   clear_calls
-  run_fail $'11\n1.0.0'
+  run_fail $'10\n2\n1.0.0'
   config_unchanged
   expect has "$READER_IMAGE:1.2.1 sha256:reader-next:1.2.1-default true running 3" "$STATE_DIR/reader.container"
   reject test -e "$STATE_DIR/webview.container"
@@ -412,7 +418,7 @@ for entry in plugin standalone; do
     if [[ $running == false ]]; then sed -i 's/ true healthy / false exited /' "$STATE_DIR/webview.container"; fi
     clear_calls
     echo unhealthy >"$STATE_DIR/fail-webview"
-    run_fail $'11\n1.1.0'
+    run_fail $'10\n2\n1.1.0'
     config_unchanged
     expect has "$WEBVIEW_IMAGE:1.0.0 sha256:webview-next:1.0.0-default $running" "$STATE_DIR/webview.container"
     expect has '1.0.0' "$STATE_DIR/webview-version"
@@ -425,7 +431,51 @@ for entry in plugin standalone; do
   install_reader 1.2.1
   install_webview
   expect cmp -s "$repo/docker/webview-seccomp.json" "$STATE_DIR/webview-seccomp.json"
-  expect has '安装 / 更新 / 指定版本 WebView' "$repo/install.sh"
-  expect has 'WebView is opt-in' "$repo/README.md"
-  printf 'PASS %s AC-06 Compose configuration validated by %s\n' "$entry" "${validator:-fixture}"
+  expect has '10. Reader 管理' "$repo/README.md"
+  expect has '1. 更新 / 指定版本 Reader' "$repo/README.md"
+  expect has '2. 安装 / 更新 / 指定版本 WebView' "$repo/README.md"
+  reject grep -Eq '^11\.' "$repo/README.md"
+  snapshot
+  clear_calls
+  run_ok $'10\n0\n7'
+  [[ $(grep -c '10\..*Reader 管理' "$STATE_DIR/menu.log") == 2 ]] || fail 'did not return to main menu'
+  expect has '更新 / 指定版本 Reader' "$STATE_DIR/menu.log"
+  expect has '安装 / 更新 / 指定版本 WebView' "$STATE_DIR/menu.log"
+  expect has '返回主菜单' "$STATE_DIR/menu.log"
+  expect has 'WebView：' "$STATE_DIR/menu.log"
+  run_ok $'10\ninvalid'
+  expect has '请输入正确的数字' "$STATE_DIR/menu.log"
+  run_ok 10
+  reject has '请输入正确的数字' "$STATE_DIR/menu.log"
+  run_ok 11
+  expect has '请输入正确的数字' "$STATE_DIR/menu.log"
+  reject grep -Eq '11\..*WebView' "$STATE_DIR/menu.log"
+  reject test -s "$calls"
+  run_ok 12
+  expect has 'docker version action' "$calls"
+  config_unchanged
+  printf 'PASS %s AC-06 submenu navigation, invalid inputs, EOF, Docker dispatch and Compose validation by %s\n' "$entry" "${validator:-fixture}"
+
+  reset webview-status
+  install_reader 1.2.1
+  run_ok 7
+  reject has 'WebView：' "$STATE_DIR/menu.log"
+  echo stale >"$STATE_DIR/webview-version"
+  run_ok 7
+  reject has 'WebView：' "$STATE_DIR/menu.log"
+  install_webview
+  echo stale >"$STATE_DIR/webview-version"
+  run_ok 7
+  expect grep -Eq 'WebView：.*运行中.*1\.0\.0' "$STATE_DIR/menu.log"
+  sed -i 's/ true healthy / false exited /' "$STATE_DIR/webview.container"
+  run_ok 7
+  expect grep -Eq 'WebView：.*exited.*1\.0\.0' "$STATE_DIR/menu.log"
+  rm "$STATE_DIR/webview.container"
+  run_ok 7
+  reject has 'WebView：' "$STATE_DIR/menu.log"
+  fixture_mode=ss
+  run_ok 7
+  expect has 'Shadowsocks 2022' "$STATE_DIR/menu.log"
+  reject has 'WebView：' "$STATE_DIR/menu.log"
+  printf 'PASS %s AC-07 running and stopped WebView, absent container with stale state, and Shadowsocks status\n' "$entry"
 done

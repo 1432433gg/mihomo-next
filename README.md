@@ -38,13 +38,17 @@ wget -N https://raw.githubusercontent.com/1432433gg/mihomo-next/main/install.sh 
 —————— 其他 ——————
 8.  更新 / 指定版本 Mihomo
 9.  更新 / 指定版本 Caddy
-10. 更新 / 指定版本 Reader
-11. 安装 / 更新 / 指定版本 WebView
+10. Reader 管理
 12. 更新 / 指定版本 Docker
 13. 重新申请 SSL 证书
 14. 更新 Linux 内核
 15. 安装 BBR 加速
 0.  退出
+
+Reader 管理（10）
+1. 更新 / 指定版本 Reader
+2. 安装 / 更新 / 指定版本 WebView
+0. 返回主菜单
 ```
 
 ## 组成
@@ -68,7 +72,7 @@ Mihomo、Caddy 和 Reader 默认关闭服务日志输出。
 - 用户名至少 5 位，只能用小写字母和数字；密码至少 8 位
 - 必须登录才能使用
 
-WebView is opt-in. After installing Reality with a compatible Reader image, use menu 11 to install WebView or choose its version. Menu 10 changes only Reader.
+WebView is opt-in. After installing Reality with a compatible Reader image, open Reader management with menu 10. Option 2 installs or updates WebView. Option 1 selects the Reader version independently.
 
 Reader 的更多用法和设置见 [reader-next](https://github.com/1432433gg/reader-next)。
 

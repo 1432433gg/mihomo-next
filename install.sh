@@ -1790,7 +1790,7 @@ stage_webview_attachment() {
   ' "$TEMPLATE_DIR/docker/docker-compose.webview.yaml" "$COMPOSE_FILE" >"$destination"
 }
 
-# ─── 11. 安装 / 更新 / 指定版本 WebView ───
+# ─── 10 → 2. 安装 / 更新 / 指定版本 WebView ───
 update_webview() (
   local webview lookup details old_ref="" old_id old_running old_version target ref image_id
   local reader_ref reader_id reader_running label first=0 reader_attempted=0
@@ -1825,7 +1825,7 @@ update_webview() (
     read -r reader_ref reader_id reader_running <<<"$details"
     label=$(docker image inspect -f '{{index .Config.Labels "io.reader-next.bundled-webview"}}' "$reader_id") || return 1
     if [[ $label != 1 ]]; then
-      print_error "当前 Reader 镜像不支持 WebView，请先通过菜单 10 更新 Reader"
+      print_error "当前 Reader 镜像不支持 WebView，请先通过 Reader 管理（菜单 10）中的选项 1 更新 Reader"
       return 1
     fi
     if ! docker info --format '{{json .SecurityOptions}}' | grep -q 'name=seccomp'; then
@@ -2280,8 +2280,7 @@ show_menu() {
   echo -e "—————— 其他 ——————"
   echo -e "${Green}8.${Font}  更新 / 指定版本 Mihomo"
   echo -e "${Green}9.${Font}  更新 / 指定版本 Caddy"
-  echo -e "${Green}10.${Font} 更新 / 指定版本 Reader"
-  echo -e "${Green}11.${Font} 安装 / 更新 / 指定版本 WebView"
+  echo -e "${Green}10.${Font} Reader 管理"
   echo -e "${Green}12.${Font} 更新 / 指定版本 Docker"
   echo -e "${Green}13.${Font} 重新申请 SSL 证书"
   if [[ $OS_ID == debian ]]; then
@@ -2301,7 +2300,7 @@ menu() {
     show_menu
     read -rp "请输入数字：" menu_num || return 0
     case "$menu_num" in
-      4|5|6|8|9|10|11|12|13)
+      4|5|6|8|9|10|12|13)
         mode=$(installed_mode) || mode=""
         if [[ $mode != reality && $mode != ss ]]; then
           if [[ $menu_num == 6 ]]; then
@@ -2314,6 +2313,21 @@ menu() {
         fi
         ;;
     esac
+    if [[ $menu_num == 10 ]]; then
+      echo
+      echo "Reader 管理"
+      echo -e "${Green}1.${Font} 更新 / 指定版本 Reader"
+      echo -e "${Green}2.${Font} 安装 / 更新 / 指定版本 WebView"
+      echo -e "${Green}0.${Font} 返回主菜单"
+      read -rp "请输入数字：" menu_num || return 0
+      case "$menu_num" in
+        1) update_reader ;;
+        2) update_webview ;;
+        0) continue ;;
+        *) print_error "请输入正确的数字" ;;
+      esac
+      return $?
+    fi
     break
   done
   case "$menu_num" in
@@ -2329,8 +2343,6 @@ menu() {
       ;;
     8) update_mihomo ;;
     9) update_caddy ;;
-    10) update_reader ;;
-    11) update_webview ;;
     12) update_docker ;;
     13) reissue_cert ;;
     14) update_kernel ;;
