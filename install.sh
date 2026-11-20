@@ -1720,6 +1720,32 @@ stage_webview_attachment() {
       }
       next
     }
+    # Append to a flow sequence so Compose uses the new value if the key
+    # already appears. Keep quoted brackets and continuation lines intact.
+    function append_flow_url(line, start,    i, c, separator) {
+      for (i = start; i <= length(line); i++) {
+        c = substr(line, i, 1)
+        if (flow_quote != "") {
+          if (flow_quote == "\"" && c == "\\") { i++; continue }
+          if (c != flow_quote) continue
+          if (c == "\047" && substr(line, i + 1, 1) == c) { i++; continue }
+          flow_quote = ""
+          flow_last = "value"
+          continue
+        }
+        if (c ~ /[[:space:]]/) continue
+        if (c == "#" && (i == 1 || substr(line, i - 1, 1) ~ /[[:space:]]/)) break
+        separator = (flow_last == "[" || flow_last == ",")
+        if (c == "]") {
+          flow_sequence = 0
+          return substr(line, 1, i - 1) (separator ? "" : ", ") \
+            "\"REMOTE_WEBVIEW_URL=http://webview:8050\"" substr(line, i)
+        }
+        if (separator && (c == "\"" || c == "\047")) flow_quote = c
+        flow_last = c
+      }
+      return line
+    }
     function reader_url() {
       print env_indent (env_list ? "- REMOTE_WEBVIEW_URL=" : "REMOTE_WEBVIEW_URL: ") "http://webview:8050"
     }
@@ -1734,6 +1760,10 @@ stage_webview_attachment() {
         env_indent = "      "; env_list = 0; reader_url()
       }
       reader = 0
+    }
+    flow_sequence {
+      print append_flow_url($0, 1)
+      next
     }
     /^[^[:space:]#]/ {
       end_reader()
@@ -1756,8 +1786,17 @@ stage_webview_attachment() {
       if (reader) readers++
     }
     reader && environment && /^    [^[:space:]#-]/ { end_environment() }
-    reader && /^    environment:[[:space:]]*\{/ {
-      # Preserve the flow mapping and let YAML merge it beneath the new URL.
+    reader && /^    environment:[[:space:]]*\[/ {
+      match($0, /^    environment:[[:space:]]*\[/)
+      flow_sequence = 1
+      flow_last = "["
+      has_environment = 1
+      print append_flow_url($0, RLENGTH + 1)
+      next
+    }
+    reader && /^    environment:[[:space:]]*(&[^[:space:]]+[[:space:]]+)?\{/ {
+      # Merge the original mapping under the new URL so its anchor still
+      # points to the original entries for any other service using it.
       print "    environment:"
       print "      REMOTE_WEBVIEW_URL: http://webview:8050"
       sub(/^    environment:[[:space:]]*/, "      <<: ")
@@ -1785,7 +1824,7 @@ stage_webview_attachment() {
     { print }
     END {
       end_reader()
-      if (webview == "" || inserted != 1 || readers != 1) exit 1
+      if (webview == "" || inserted != 1 || readers != 1 || flow_sequence) exit 1
     }
   ' "$TEMPLATE_DIR/docker/docker-compose.webview.yaml" "$COMPOSE_FILE" >"$destination"
 }

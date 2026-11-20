@@ -109,7 +109,13 @@ docker() {
       read -r ref id running health generation <"$STATE_DIR/$service.container"
       case "$format" in
         *com.docker.compose.project*) echo reader-next ;;
-        *State.Health*) echo "$health" ;;
+        *State.Health*)
+          if [[ -f $STATE_DIR/check-first-attach-readiness ]]; then
+            [[ ! -e $STATE_DIR/webview-version ]] || return 1
+            printf 'readiness %s %s\n' "$service" "$health" >>"$calls"
+          fi
+          echo "$health"
+          ;;
         *Image*State.Running*) echo "$ref $id $running" ;;
         '{{.Config.Image}} {{.Image}}') echo "$ref $id" ;;
         '{{.Config.Image}}') echo "$ref" ;;
@@ -346,6 +352,50 @@ for entry in plugin standalone; do
     expect has 'REMOTE_WEBVIEW_URL: http://webview:8050' "$STATE_DIR/reader.resolved"
     expect has '1.0.0' "$STATE_DIR/webview-version"
 
+    for form in multiline-map anchored-map flow-sequence multiline-sequence; do
+      reset "$form"
+      install_reader 1.2.1
+      case "$form" in
+        multiline-map)
+          sed -i '/^    logging:/i\    environment: { TZ: Asia/Shanghai,\n      NOTE: keep }' "$COMPOSE_FILE"
+          ;;
+        anchored-map)
+          sed -i '/^    logging:/i\    environment: \&reader_defaults { TZ: Asia/Shanghai, NOTE: keep, REMOTE_WEBVIEW_URL: original }' "$COMPOSE_FILE"
+          sed -i '/^volumes:/i\  consumer:\n    image: example.invalid/consumer:fixture\n    environment: *reader_defaults' "$COMPOSE_FILE"
+          ;;
+        flow-sequence)
+          sed -i '/^    logging:/i\    environment: ["TZ=Asia/Shanghai", "NOTE=keep"]' "$COMPOSE_FILE"
+          ;;
+        multiline-sequence)
+          sed -i '/^    logging:/i\    environment: ["TZ=Asia/Shanghai", # list continues\n      "NOTE=keep],#value", "REMOTE_WEBVIEW_URL=original", # trailing separator\n      ]' "$COMPOSE_FILE"
+          ;;
+      esac
+      expect compose config -q
+      if [[ $form == anchored-map ]]; then
+        compose config | tr -d '\r' | resolved_service consumer /dev/stdin >"$STATE_DIR/consumer.before"
+        expect has 'REMOTE_WEBVIEW_URL: original' "$STATE_DIR/consumer.before"
+      fi
+      touch "$STATE_DIR/check-first-attach-readiness"
+      install_webview
+      compose config | tr -d '\r' >"$STATE_DIR/resolved.yaml"
+      resolved_service reader "$STATE_DIR/resolved.yaml" >"$STATE_DIR/reader.resolved"
+      resolved_service webview "$STATE_DIR/resolved.yaml" >"$STATE_DIR/webview.resolved"
+      expect has 'TZ: Asia/Shanghai' "$STATE_DIR/reader.resolved"
+      expect has 'NOTE: keep' "$STATE_DIR/reader.resolved"
+      expect has 'REMOTE_WEBVIEW_URL: http://webview:8050' "$STATE_DIR/reader.resolved"
+      if [[ $form == anchored-map ]]; then
+        resolved_service consumer "$STATE_DIR/resolved.yaml" >"$STATE_DIR/consumer.after"
+        expect cmp -s "$STATE_DIR/consumer.before" "$STATE_DIR/consumer.after"
+      elif [[ $form == multiline-sequence ]]; then
+        expect has 'NOTE: keep],#value' "$STATE_DIR/reader.resolved"
+      fi
+      [[ $(webview_attachment_network "$COMPOSE_FILE") == 'shared default' ]] || fail 'missing shared default network'
+      reject has '    ports:' "$STATE_DIR/webview.resolved"
+      expect has 'readiness webview healthy' "$calls"
+      expect has 'readiness reader running' "$calls"
+      expect has '1.0.0' "$STATE_DIR/webview-version"
+    done
+
     reset unshared-external
     install_reader 1.2.1
     sed -i '/^    logging:/i\    networks: [reader-lan]' "$COMPOSE_FILE"
@@ -357,7 +407,7 @@ for entry in plugin standalone; do
     config_unchanged
     no_webview_actions
     reject test -e "$STATE_DIR/webview-version"
-    printf 'PASS %s AC-03 review regressions: explicit shared network, preserved network aliases and flow environment\n' "$entry"
+    printf 'PASS %s AC-03 review regressions: shared project network, network aliases, anchored and unanchored mappings, and flow sequences\n' "$entry"
   fi
 
   reset guard-fresh
